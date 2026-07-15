@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.pears.Drive</id>
+
+  <name>Drive</name>
+  <summary>Peer-to-peer encrypted file drive built on Pear</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>Apache-2.0</project_license>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release date="2026-07-15" version="1.0.0"/>
+  </releases>
+
+  <recommends>
+    <display_length compare="ge">600</display_length>
+  </recommends>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <description>
+    <p>Peer-to-peer encrypted file drive built on Pear and Electron.</p>
+    <ul>
+      <li>Create an account or unlock with a 24-word recovery key</li>
+      <li>Encrypted personal Hyperdrive vault</li>
+      <li>Per-chunk content hashing and verification</li>
+      <li>Read-only and collaborative share invites</li>
+      <li>Optional blind peer pinning for offline availability</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.pears.Drive.desktop</launchable>
+</component>

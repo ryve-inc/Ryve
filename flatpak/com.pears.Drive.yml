@@ -1,0 +1,42 @@
+# Flatpak manifest for Drive.
+# Replace placeholder archive URLs and checksums before publishing.
+id: com.pears.Drive
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '25.08'
+command: Drive # Must match the installed launcher script
+separate-locales: false
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --env=XCURSOR_PATH=/run/host/user-share/icons:/run/host/share/icons
+modules:
+  - name: Drive
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 flatpak/${FLATPAK_ID}.desktop -t /app/share/applications/
+      - install -Dm644 flatpak/${FLATPAK_ID}.png -t /app/share/icons/hicolor/128x128/apps/
+      - install -Dm755 flatpak/entrypoint.sh /app/bin/Drive
+      - mkdir -p /app/lib/${FLATPAK_ID}
+      - cp -r ./Drive-*/* /app/lib/${FLATPAK_ID}
+    sources:
+      - type: archive
+        url: http://localhost:8000/drive_1.0.0_arm64_flatpak.tar.gz # TODO: Update to the link where the Flatpak asset is hosted
+        only-arches:
+          - aarch64
+        strip-components: 0
+        sha512: 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 # TODO: Use sha512sum to get the value
+      - type: archive
+        url: http://localhost:8000/drive_1.0.0_x64_flatpak.tar.gz # TODO: Update to the link where the Flatpak asset is hosted
+        only-arches:
+          - x86_64
+        strip-components: 0
+        sha512: 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 # TODO: Use sha512sum to get the value
+      - type: file
+        path: com.pears.Drive.metainfo.xml

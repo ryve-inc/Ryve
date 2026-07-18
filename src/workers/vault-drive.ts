@@ -6,6 +6,7 @@ import idEnc from 'hypercore-id-encoding'
 import b4a from 'b4a'
 import { buildChunkManifest } from './chunk-manifest'
 import { pinCore } from './blind'
+import { clearLocalChunksAfterReplication } from './prune'
 
 function normalizePath(p) {
   if (!p || p === '/') return '/'
@@ -120,6 +121,9 @@ class VaultDrive {
         chunks: manifest.chunks,
         chunkCount: manifest.chunks.length
       }
+    })
+    clearLocalChunksAfterReplication(this.drive, dest).catch((err) => {
+      console.error('[Pruner] Background pruning error:', err)
     })
     return buildChunkManifest(this.drive, dest)
   }

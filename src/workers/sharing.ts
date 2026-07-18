@@ -10,6 +10,7 @@ import path from 'bare-path'
 import { buildChunkManifest } from './chunk-manifest'
 import { normalizePath, joinPath, underPrefix } from './vault-drive'
 import { pinCore, loadSharesIndex, saveSharesIndex } from './blind'
+import { clearLocalChunksAfterReplication } from './prune'
 
 function encodeInvite(payload) {
   return 'drive:' + z32.encode(b4a.from(JSON.stringify(payload)))
@@ -393,6 +394,9 @@ class ShareManager {
     const manifest = await buildChunkManifest(share.drive, dest)
     await share.drive.put(dest, data, {
       metadata: { ...tempMeta, chunks: manifest.chunks, chunkCount: manifest.chunks.length }
+    })
+    clearLocalChunksAfterReplication(share.drive, dest).catch((err) => {
+      console.error('[Pruner] Background share pruning error:', err)
     })
     return buildChunkManifest(share.drive, dest)
   }

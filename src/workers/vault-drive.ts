@@ -38,25 +38,28 @@ function hashChunk(buf) {
   return b4a.toString(hypercoreCrypto.hash(buf), 'hex')
 }
 
-// Encrypt / decrypt buffer with master encryption key
+import crypto from 'node:crypto'
+
 function encryptBuffer(buf, key) {
-  const nonce = hypercoreCrypto.randomBytes(24)
-  const cipher = hypercoreCrypto.hash(b4a.concat([key, nonce, buf]))
-  // XOR stream for zero-knowledge chunk encryption
-  const encrypted = b4a.alloc(buf.byteLength)
-  for (let i = 0; i < buf.byteLength; i++) {
-    encrypted[i] = buf[i] ^ cipher[i % cipher.byteLength]
+  const nonce = crypto.randomBytes(12)
+  const key32 = hypercoreCrypto.hash(key)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key32, nonce)
+  const encrypted = b4a.concat([cipher.update(buf), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return {
+    encrypted: b4a.concat([tag, encrypted]),
+    nonce: b4a.toString(nonce, 'hex')
   }
-  return { encrypted, nonce: b4a.toString(nonce, 'hex') }
 }
 
-function decryptBuffer(encrypted, key, nonceHex) {
+function decryptBuffer(authAndEncrypted, key, nonceHex) {
   const nonce = b4a.from(nonceHex, 'hex')
-  const cipher = hypercoreCrypto.hash(b4a.concat([key, nonce, encrypted]))
-  const decrypted = b4a.alloc(encrypted.byteLength)
-  for (let i = 0; i < encrypted.byteLength; i++) {
-    decrypted[i] = encrypted[i] ^ cipher[i % cipher.byteLength]
-  }
+  const key32 = hypercoreCrypto.hash(key)
+  const tag = authAndEncrypted.subarray(0, 16)
+  const encrypted = authAndEncrypted.subarray(16)
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key32, nonce)
+  decipher.setAuthTag(tag)
+  const decrypted = b4a.concat([decipher.update(encrypted), decipher.final()])
   return decrypted
 }
 
@@ -139,11 +142,17 @@ class VaultDrive {
     const chunks = []
     const chunkMetadata = []
 
+    let index = 0
     for (let offset = 0; offset < encrypted.byteLength; offset += CHUNK_SIZE) {
       const chunkBuf = encrypted.subarray(offset, Math.min(encrypted.byteLength, offset + CHUNK_SIZE))
       const hash = hashChunk(chunkBuf)
       chunks.push({ hash, buffer: chunkBuf })
-      chunkMetadata.push({ hash, length: chunkBuf.byteLength })
+      chunkMetadata.push({
+        index: index++,
+        offset,
+        length: chunkBuf.byteLength,
+        hash
+      })
     }
 
     // 3. Offload encrypted chunks to network peers in global chunk store
@@ -246,11 +255,18 @@ class VaultDrive {
     await this.drive.ready()
     const entry = await this.drive.entry(p)
     const meta = entry?.value?.metadata
+    const rawChunks = meta?.chunks || []
+    const chunks = rawChunks.map((c, i) => ({
+      index: c.index !== undefined ? c.index : i,
+      offset: c.offset !== undefined ? c.offset : i * (64 * 1024),
+      length: c.length || 64 * 1024,
+      hash: c.hash
+    }))
     return {
       path: p,
       byteLength: meta?.originalSize || 0,
       mime: meta?.mime || null,
-      chunks: meta?.chunks || [],
+      chunks,
       metadata: meta || null
     }
   }

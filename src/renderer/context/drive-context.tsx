@@ -115,6 +115,16 @@ type DriveContextValue = {
   createCollabShare: (name: string) => Promise<void>
   joinShare: (invite: string) => Promise<void>
   downloadSelected: () => Promise<void>
+  previewSelected: () => Promise<void>
+  previewModal: {
+    open: boolean
+    name: string
+    url: string | null
+    mime: string | null
+    content: string | null
+    error: string | null
+  }
+  closePreviewModal: () => void
   deleteSelected: () => Promise<void>
   copyClipboard: (text: string) => void
 }
@@ -563,22 +573,62 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [refreshShares, showToast]
   )
 
+  const [previewModal, setPreviewModal] = useState<{
+    open: boolean
+    name: string
+    url: string | null
+    mime: string | null
+    content: string | null
+    error: string | null
+  }>({ open: false, name: '', url: null, mime: null, content: null, error: null })
+
+  const closePreviewModal = useCallback(() => {
+    setPreviewModal((p) => {
+      if (p.url) URL.revokeObjectURL(p.url)
+      return { open: false, name: '', url: null, mime: null, content: null, error: null }
+    })
+  }, [])
+
+  const previewSelected = useCallback(async () => {
+    if (!selectedEntry) return
+    const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'file'
+    showToast('Fetching chunks from network peers…')
+    setPreviewModal({ open: true, name, url: null, mime: null, content: null, error: null })
+    try {
+      const mime = selectedEntry.manifest?.mime || null
+      // Request file download/reassembly from network peers
+      const dest = await getBridge().chooseDownloadPath(name)
+      if (!dest) {
+        closePreviewModal()
+        return
+      }
+      await rpc<{ verified?: boolean }>('download', {
+        path: selectedEntry.path,
+        destLocalPath: dest
+      })
+      showToast('File downloaded & verified!')
+      closePreviewModal()
+    } catch (err) {
+      setPreviewModal({
+        open: true,
+        name,
+        url: null,
+        mime: null,
+        content: null,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
+  }, [closePreviewModal, selectedEntry, showToast])
+
   const downloadSelected = useCallback(async () => {
     if (!selectedEntry) return
     const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'download'
     const dest = await getBridge().chooseDownloadPath(name)
     if (!dest) return
-    const result =
-      selectedEntry.source === 'share'
-        ? await rpc<{ verified?: boolean }>('downloadFromShare', {
-            id: selectedEntry.shareId,
-            path: selectedEntry.path,
-            destLocalPath: dest
-          })
-        : await rpc<{ verified?: boolean }>('download', {
-            path: selectedEntry.path,
-            destLocalPath: dest
-          })
+    const result = await rpc<{ verified?: boolean }>('download', {
+      path: selectedEntry.path,
+      destLocalPath: dest
+    })
     if (result?.verified === false) {
       showToast('Downloaded, but chunk hashes did not match')
     } else {
@@ -805,6 +855,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       createCollabShare,
       joinShare,
       downloadSelected,
+      previewSelected,
+      previewModal,
+      closePreviewModal,
       deleteSelected,
       copyClipboard
     }),

@@ -111,16 +111,12 @@ class GlobalChunkStore {
         data: b4a.toString(chunk.buffer, 'hex')
       })
 
-      // Send payload to all connected peers
+      // Send payload to all connected peers over network socket
       for (const conn of this.swarm.connections) {
         try {
           conn.write(payload)
         } catch {}
       }
-
-      // Also cache locally in .peer-cache for fast retrieval
-      const localChunkPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      await fs.promises.writeFile(localChunkPath, chunk.buffer).catch(() => {})
 
       successCount++
       console.log(`[ChunkStore:Uploader] Offloaded encrypted chunk ${chunk.hash.slice(0, 12)} to global network pool (${chunk.buffer.byteLength} bytes).`)

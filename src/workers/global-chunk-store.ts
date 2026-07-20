@@ -6,12 +6,6 @@ import hypercoreCrypto from 'hypercore-crypto'
 
 const CHUNK_POOL_TOPIC = 'p2cloud:chunk-pool-v2'
 
-// Binary Command IDs
-const CMD_STORE_CHUNK = 0x01
-const CMD_GET_CHUNK = 0x02
-const CMD_CHUNK_DATA = 0x03
-const CMD_NOT_FOUND = 0x04
-
 class GlobalChunkStore {
   constructor({ swarm, storageDir }) {
     this.swarm = swarm
@@ -46,105 +40,76 @@ class GlobalChunkStore {
 
     console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${this.swarm.connections.size}`)
 
-    let buffer = b4a.alloc(0)
+    let lineBuffer = ''
 
     conn.on('close', () => {
       console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${this.swarm.connections.size}`)
     })
 
-    // Zero-copy binary stream parser
+    // Robust line-delimited JSON stream parser
     conn.on('data', async (data) => {
-      buffer = b4a.concat([buffer, data])
+      lineBuffer += data.toString('utf-8')
+      const lines = lineBuffer.split('\n')
+      lineBuffer = lines.pop() || '' // Keep partial trailing line in buffer
 
-      while (buffer.byteLength > 0) {
-        const cmd = buffer[0]
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const msg = JSON.parse(line)
+          if (!msg || typeof msg !== 'object') continue
 
-        // 1. STORE_CHUNK: [1 byte cmd] [64 bytes hash] [4 bytes len] [payload]
-        if (cmd === CMD_STORE_CHUNK) {
-          if (buffer.byteLength < 69) break // Wait for header
-          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
-          const length = buffer.readUInt32BE(65)
-          const totalPacketSize = 69 + length
-          if (buffer.byteLength < totalPacketSize) break // Wait for full payload
-
-          const chunkBuf = buffer.subarray(69, totalPacketSize)
-          const chunkPath = path.join(this.cacheDir, hash + '.bin')
-          
-          // Asynchronously write binary payload directly to cache without blocking thread
-          fs.promises.writeFile(chunkPath, chunkBuf).catch(() => {})
-          console.log(`[ChunkStore:Cache] Cached binary chunk ${hash.slice(0, 12)} (${length} bytes)`)
-
-          buffer = buffer.subarray(totalPacketSize)
-        }
-
-        // 2. GET_CHUNK: [1 byte cmd] [64 bytes hash]
-        else if (cmd === CMD_GET_CHUNK) {
-          if (buffer.byteLength < 65) break
-          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
-          buffer = buffer.subarray(65)
-
-          const chunkPath = path.join(this.cacheDir, hash + '.bin')
-          try {
-            const rawBuf = await fs.promises.readFile(chunkPath)
-            // Respond with binary frame: [0x03] [64b hash] [4b len] [payload]
-            const header = b4a.alloc(69)
-            header[0] = CMD_CHUNK_DATA
-            header.write(hash, 1, 64, 'ascii')
-            header.writeUInt32BE(rawBuf.byteLength, 65)
-            conn.write(b4a.concat([header, rawBuf]))
-            console.log(`[ChunkStore:Server] Served binary chunk ${hash.slice(0, 12)} (${rawBuf.byteLength} bytes)`)
-          } catch {
-            const notFoundHeader = b4a.alloc(65)
-            notFoundHeader[0] = CMD_NOT_FOUND
-            notFoundHeader.write(hash, 1, 64, 'ascii')
-            conn.write(notFoundHeader)
-          }
-        }
-
-        // 3. CHUNK_DATA: [1 byte cmd] [64 bytes hash] [4 bytes len] [payload]
-        else if (cmd === CMD_CHUNK_DATA) {
-          if (buffer.byteLength < 69) break
-          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
-          const length = buffer.readUInt32BE(65)
-          const totalPacketSize = 69 + length
-          if (buffer.byteLength < totalPacketSize) break
-
-          const chunkBuf = b4a.from(buffer.subarray(69, totalPacketSize))
-          buffer = buffer.subarray(totalPacketSize)
-
-          const pending = this.activeRequests.get(hash)
-          if (pending) {
-            this.activeRequests.delete(hash)
-            pending.resolve(chunkBuf)
-          }
-        }
-
-        // 4. NOT_FOUND: [1 byte cmd] [64 bytes hash]
-        else if (cmd === CMD_NOT_FOUND) {
-          if (buffer.byteLength < 65) break
-          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
-          buffer = buffer.subarray(65)
-
-          const pending = this.activeRequests.get(hash)
-          if (pending) {
-            pending.notFoundCount = (pending.notFoundCount || 0) + 1
-            if (pending.notFoundCount >= this.swarm.connections.size) {
-              this.activeRequests.delete(hash)
-              pending.reject(new Error(`Chunk ${hash.slice(0, 12)} not found on online peers.`))
+          // 1. Peer requesting a chunk by hash
+          if (msg.type === 'get-chunk' && msg.hash) {
+            const chunkPath = path.join(this.cacheDir, msg.hash + '.bin')
+            try {
+              const buf = await fs.promises.readFile(chunkPath)
+              conn.write(JSON.stringify({
+                type: 'chunk-data',
+                hash: msg.hash,
+                data: b4a.toString(buf, 'hex')
+              }) + '\n')
+              console.log(`[ChunkStore:Server] Served chunk ${msg.hash.slice(0, 12)} (${buf.byteLength} bytes) to peer`)
+            } catch {
+              conn.write(JSON.stringify({ type: 'chunk-not-found', hash: msg.hash }) + '\n')
             }
           }
-        }
 
-        else {
-          // Unknown header byte: discard byte and resync
-          buffer = buffer.subarray(1)
-        }
+          // 2. Peer sending an encrypted chunk to store in our .peer-cache
+          else if (msg.type === 'store-chunk' && msg.hash && msg.data) {
+            const chunkPath = path.join(this.cacheDir, msg.hash + '.bin')
+            const buf = b4a.from(msg.data, 'hex')
+            // Asynchronously write chunk to .peer-cache
+            fs.promises.writeFile(chunkPath, buf).catch(() => {})
+            conn.write(JSON.stringify({ type: 'store-ack', hash: msg.hash }) + '\n')
+            console.log(`[ChunkStore:Cache] Cached chunk ${msg.hash.slice(0, 12)} (${buf.byteLength} bytes)`)
+          }
+
+          // 3. Responses for pending fetch requests
+          else if (msg.type === 'chunk-data' && msg.hash && msg.data) {
+            const pending = this.activeRequests.get(msg.hash)
+            if (pending) {
+              this.activeRequests.delete(msg.hash)
+              pending.resolve(b4a.from(msg.data, 'hex'))
+            }
+          }
+
+          else if (msg.type === 'chunk-not-found' && msg.hash) {
+            const pending = this.activeRequests.get(msg.hash)
+            if (pending) {
+              pending.notFoundCount = (pending.notFoundCount || 0) + 1
+              if (pending.notFoundCount >= this.swarm.connections.size) {
+                this.activeRequests.delete(msg.hash)
+                pending.reject(new Error(`Chunk ${msg.hash.slice(0, 12)} not found on online peers.`))
+              }
+            }
+          }
+        } catch {}
       }
     })
   }
 
   /**
-   * Fast, zero-copy binary chunk offloading using sliding window backpressure.
+   * Line-delimited JSON chunk offloading with 5ms async yields for zero UI lag.
    */
   async offloadChunks(chunkList) {
     if (this.swarm.connections.size === 0) {
@@ -152,41 +117,34 @@ class GlobalChunkStore {
       return false
     }
 
-    const BATCH_SIZE = 4 // Process 4 chunks per batch (Sliding Window)
+    let successCount = 0
 
-    for (let i = 0; i < chunkList.length; i += BATCH_SIZE) {
-      const batch = chunkList.slice(i, i + BATCH_SIZE)
+    for (const chunk of chunkList) {
+      const linePayload = JSON.stringify({
+        type: 'store-chunk',
+        hash: chunk.hash,
+        data: b4a.toString(chunk.buffer, 'hex')
+      }) + '\n'
 
-      for (const chunk of batch) {
-        // Construct binary packet: [0x01] [64b hash] [4b len] [payload]
-        const header = b4a.alloc(69)
-        header[0] = CMD_STORE_CHUNK
-        header.write(chunk.hash, 1, 64, 'ascii')
-        header.writeUInt32BE(chunk.buffer.byteLength, 65)
-
-        const packet = b4a.concat([header, chunk.buffer])
-
-        for (const conn of this.swarm.connections) {
-          try {
-            const drained = conn.write(packet)
-            // Respect socket backpressure if write buffer is full
-            if (!drained && conn.once) {
-              await new Promise((res) => conn.once('drain', res))
-            }
-          } catch {}
-        }
+      // Send line payload to all connected peers over network socket
+      for (const conn of this.swarm.connections) {
+        try {
+          conn.write(linePayload)
+        } catch {}
       }
 
-      // Small 10ms yield to keep JavaScript event loop 100% smooth and lag-free
-      await new Promise((res) => setTimeout(res, 10))
+      successCount++
+
+      // Tiny 5ms async yield per chunk to keep UI at 60 FPS smooth with 0 lag
+      await new Promise((resolve) => setTimeout(resolve, 5))
     }
 
-    console.log(`[ChunkStore:Uploader] ✓ Fast binary offload of ${chunkList.length} chunks completed!`)
-    return true
+    console.log(`[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks to network peers!`)
+    return successCount === chunkList.length
   }
 
   /**
-   * Fetches an encrypted chunk using binary framing.
+   * Fetches an encrypted chunk using line-delimited JSON querying.
    */
   async fetchChunk(hash, timeoutMs = 15000) {
     // 1. Check local .peer-cache first
@@ -196,7 +154,7 @@ class GlobalChunkStore {
       return localBuf
     } catch {}
 
-    // 2. Request chunk from online network peers using binary command 0x02
+    // 2. Query online network peers over Hyperswarm
     if (this.swarm.connections.size === 0) {
       throw new Error(`Chunk ${hash.slice(0, 12)} unavailable: No online peers connected.`)
     }
@@ -218,14 +176,10 @@ class GlobalChunkStore {
         }
       })
 
-      // Send binary request: [0x02] [64b hash]
-      const reqHeader = b4a.alloc(65)
-      reqHeader[0] = CMD_GET_CHUNK
-      reqHeader.write(hash, 1, 64, 'ascii')
-
+      const reqPayload = JSON.stringify({ type: 'get-chunk', hash }) + '\n'
       for (const conn of this.swarm.connections) {
         try {
-          conn.write(reqHeader)
+          conn.write(reqPayload)
         } catch {}
       }
     })

@@ -37,11 +37,12 @@ function underPrefix(filePath, prefix) {
 }
 
 class VaultDrive {
-  constructor({ store, swarm, encryptionKey, blinds = null }) {
+  constructor({ store, swarm, encryptionKey, blinds = null, globalPool = null }) {
     this.store = store
     this.swarm = swarm
     this.encryptionKey = encryptionKey
     this.blinds = blinds
+    this.globalPool = globalPool
     this.drive = null
     this._discovery = null
   }
@@ -53,6 +54,9 @@ class VaultDrive {
     await this.drive.ready()
     this._discovery = this.swarm.join(this.drive.discoveryKey, { server: true, client: true })
     await this._discovery.flushed()
+    if (this.globalPool) {
+      this.globalPool.registerStore(this.store)
+    }
     await pinCore(this.blinds, this.drive.core)
     if (this.drive.blobs?.core) await pinCore(this.blinds, this.drive.blobs.core)
     return this

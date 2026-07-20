@@ -13,6 +13,7 @@ import { isBareKit } from 'which-runtime'
 import { createAccount, unlockFromMnemonic, publicIdentity } from './identity'
 import { VaultDrive } from './vault-drive'
 import { ShareManager } from './sharing'
+import { GlobalPeerPool } from './global-pool'
 import {
   loadSettings,
   saveSettings,
@@ -55,6 +56,11 @@ console.log('Application storage:', storageDir)
 pear.updater.on('updating', () => pipe.write('updating'))
 pear.updater.on('updated', () => pipe.write('updated'))
 
+const globalPool = new GlobalPeerPool({ swarm, store: pearStore })
+globalPool.init().catch((err) => {
+  console.error('[GlobalPeerPool] Init error:', err)
+})
+
 const state = {
   unlocked: false,
   primaryKey: null,
@@ -64,6 +70,7 @@ const state = {
   vault: null,
   shares: null,
   blinds: null,
+  globalPool,
   settings: { blindPeerKeys: [] },
   peerCount: 0
 }
@@ -152,7 +159,8 @@ async function openVault(keys) {
     store: state.vaultStore,
     swarm,
     encryptionKey: keys.encryptionKey,
-    blinds: state.blinds
+    blinds: state.blinds,
+    globalPool: state.globalPool
   })
   await state.vault.open()
 

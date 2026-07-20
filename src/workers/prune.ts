@@ -38,11 +38,11 @@ async function clearLocalChunksAfterReplication(drive, entryPath) {
 
   if (uploaded.size >= blob.blockLength) {
     await blobsCore.clear(start, end)
-    console.log(`[Pruner] All chunks for ${entryPath} were already replicated. Cleared locally [${start} - ${end})`)
+    console.log(`[Pruner] All chunks for ${entryPath} are hosted by global pool peers. Cleared locally [${start} - ${end})`)
     return
   }
 
-  console.log(`[Pruner] Waiting for replication of ${entryPath} [${start} - ${end}). Current progress: ${uploaded.size}/${blob.blockLength} chunks.`)
+  console.log(`[Pruner] Monitoring global storage network for ${entryPath} [${start} - ${end}). Progress: ${uploaded.size}/${blob.blockLength} chunks replicated.`)
 
   return new Promise((resolve) => {
     const onUpload = (index) => {

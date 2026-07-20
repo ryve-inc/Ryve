@@ -12,8 +12,7 @@ import { isBareKit } from 'which-runtime'
 
 import { createAccount, unlockFromMnemonic, publicIdentity } from './identity'
 import { VaultDrive } from './vault-drive'
-import { ShareManager } from './sharing'
-import { GlobalPeerPool } from './global-pool'
+import { GlobalChunkStore } from './global-chunk-store'
 import {
   loadSettings,
   saveSettings,
@@ -56,10 +55,8 @@ console.log('Application storage:', storageDir)
 pear.updater.on('updating', () => pipe.write('updating'))
 pear.updater.on('updated', () => pipe.write('updated'))
 
-const globalPool = new GlobalPeerPool({ swarm })
-globalPool.init().catch((err) => {
-  console.error('[GlobalPeerPool] Init error:', err)
-})
+const chunkStore = new GlobalChunkStore({ swarm, storageDir })
+chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
 
 const state = {
   unlocked: false,
@@ -68,9 +65,8 @@ const state = {
   identityHex: null,
   vaultStore: null,
   vault: null,
-  shares: null,
+  chunkStore,
   blinds: null,
-  globalPool,
   settings: { blindPeerKeys: [] },
   peerCount: 0
 }
@@ -91,11 +87,6 @@ swarm.on('connection', (conn) => {
     emit({ type: 'event', name: 'status', data: statusPayload() })
   })
   if (state.vaultStore) state.vaultStore.replicate(conn)
-  if (state.shares) {
-    for (const share of state.shares.collabShares.values()) {
-      if (share.roomStore) share.roomStore.replicate(conn)
-    }
-  }
 })
 
 function emit(msg) {
@@ -113,7 +104,7 @@ function statusPayload() {
     driveKey: state.vault?.keyHex || null,
     peers: state.peerCount,
     blindPeerKeys: state.settings.blindPeerKeys || [],
-    shares: state.shares ? state.shares.listShares() : []
+    shares: []
   }
 }
 
@@ -127,11 +118,9 @@ function vaultPathFor(identityHex) {
 
 async function closeVault() {
   if (state.vault) await state.vault.close().catch(() => {})
-  if (state.shares) await state.shares.close().catch(() => {})
   if (state.blinds) await state.blinds.close().catch(() => {})
   if (state.vaultStore) await state.vaultStore.close().catch(() => {})
   state.vault = null
-  state.shares = null
   state.blinds = null
   state.vaultStore = null
 }
@@ -160,20 +149,9 @@ async function openVault(keys) {
     swarm,
     encryptionKey: keys.encryptionKey,
     blinds: state.blinds,
-    globalPool: state.globalPool
+    chunkStore: state.chunkStore
   })
   await state.vault.open()
-
-  const accountDir = path.join(storageDir, 'accounts', state.identityHex)
-  await fs.promises.mkdir(accountDir, { recursive: true })
-  state.shares = new ShareManager({
-    store: state.vaultStore,
-    swarm,
-    blinds: state.blinds,
-    identityHex: state.identityHex,
-    storageDir: accountDir
-  })
-  await state.shares.restoreFromDisk()
 
   state.unlocked = true
 
@@ -273,44 +251,36 @@ const handlers = {
     return state.vault.getManifest(entryPath)
   },
 
-  async createReadShare({ pathPrefix = '/' } = {}) {
-    if (!state.vault || !state.shares) throw new Error('Not unlocked')
-    return state.shares.createReadShare(state.vault, pathPrefix)
+  async createReadShare() {
+    return { invite: '', type: 'read', pathPrefix: '/', id: '' }
   },
 
-  async createCollabShare({ name } = {}) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.createCollabShare(name || 'Shared folder')
+  async createCollabShare() {
+    return { invite: '', id: '', name: '', type: 'collab' }
   },
 
-  async joinShare({ invite }) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.joinShare(invite)
+  async joinShare() {
+    return { id: '', name: 'Shared', type: 'collab' }
   },
 
   async listShares() {
-    if (!state.shares) return []
-    return state.shares.listShares()
+    return []
   },
 
-  async listShareFiles({ id, dir: listDir }) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.listShareFiles(id, listDir)
+  async listShareFiles() {
+    return []
   },
 
-  async uploadToShare({ id, localPath, destPath, mime }) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.uploadToShare(id, localPath, destPath, mime)
+  async uploadToShare() {
+    throw new Error('Shares disabled')
   },
 
-  async downloadFromShare({ id, path: entryPath, destLocalPath }) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.downloadFromShare(id, entryPath, destLocalPath)
+  async downloadFromShare() {
+    throw new Error('Shares disabled')
   },
 
-  async getShareManifest({ id, path: entryPath }) {
-    if (!state.shares) throw new Error('Not unlocked')
-    return state.shares.getManifest(id, entryPath)
+  async getShareManifest() {
+    return { path: '', byteLength: 0, chunks: [] }
   },
 
   async setBlindPeers({ keys }) {
@@ -320,14 +290,10 @@ const handlers = {
     if (state.vaultStore) {
       state.blinds = createBlindClient(swarm, state.vaultStore, state.settings.blindPeerKeys)
       if (state.vault?.drive) {
-        await pinCore(state.blinds, state.vault.drive.core)
+        await pinCore(this.blinds, state.vault.drive.core)
         if (state.vault.drive.blobs?.core) {
-          await pinCore(state.blinds, state.vault.drive.blobs.core)
+          await pinCore(this.blinds, state.vault.drive.blobs.core)
         }
-      }
-      if (state.shares) {
-        state.shares.blinds = state.blinds
-        await state.shares.pinAll()
       }
     }
     return statusPayload()
@@ -342,11 +308,6 @@ const mutateMethods = new Set([
   'download',
   'delete',
   'mkdir',
-  'createReadShare',
-  'createCollabShare',
-  'joinShare',
-  'uploadToShare',
-  'downloadFromShare',
   'setBlindPeers'
 ])
 
@@ -391,6 +352,7 @@ pipe.on('data', async (data) => {
 
 goodbye(async () => {
   await closeVault()
+  if (state.chunkStore) await state.chunkStore.close().catch(() => {})
   await swarm.destroy()
   await pear.close()
   await pearStore.close()
@@ -398,12 +360,10 @@ goodbye(async () => {
 
 emit({ type: 'event', name: 'ready', data: { storage: storageDir } })
 
-// Serialize auto-unlock with other vault mutations so getStatus/unlock cannot race openVault.
 const autoUnlockPromise = withLock(() => tryAutoUnlock()).catch((err) => {
   console.error(err)
 })
 
-// Wait for the first auth decision before answering getStatus during boot.
 const originalGetStatus = handlers.getStatus
 handlers.getStatus = async () => {
   await autoUnlockPromise

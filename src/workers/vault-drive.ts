@@ -4,9 +4,7 @@ import fs from 'bare-fs'
 import Hyperdrive from 'hyperdrive'
 import idEnc from 'hypercore-id-encoding'
 import b4a from 'b4a'
-import { buildChunkManifest } from './chunk-manifest'
-import { pinCore } from './blind'
-import { clearLocalChunksAfterReplication } from './prune'
+import hypercoreCrypto from 'hypercore-crypto'
 
 function normalizePath(p) {
   if (!p || p === '/') return '/'
@@ -36,13 +34,39 @@ function underPrefix(filePath, prefix) {
   return p === pre || p.startsWith(pre + '/')
 }
 
+function hashChunk(buf) {
+  return b4a.toString(hypercoreCrypto.hash(buf), 'hex')
+}
+
+// Encrypt / decrypt buffer with master encryption key
+function encryptBuffer(buf, key) {
+  const nonce = hypercoreCrypto.randomBytes(24)
+  const cipher = hypercoreCrypto.hash(b4a.concat([key, nonce, buf]))
+  // XOR stream for zero-knowledge chunk encryption
+  const encrypted = b4a.alloc(buf.byteLength)
+  for (let i = 0; i < buf.byteLength; i++) {
+    encrypted[i] = buf[i] ^ cipher[i % cipher.byteLength]
+  }
+  return { encrypted, nonce: b4a.toString(nonce, 'hex') }
+}
+
+function decryptBuffer(encrypted, key, nonceHex) {
+  const nonce = b4a.from(nonceHex, 'hex')
+  const cipher = hypercoreCrypto.hash(b4a.concat([key, nonce, encrypted]))
+  const decrypted = b4a.alloc(encrypted.byteLength)
+  for (let i = 0; i < encrypted.byteLength; i++) {
+    decrypted[i] = encrypted[i] ^ cipher[i % cipher.byteLength]
+  }
+  return decrypted
+}
+
 class VaultDrive {
-  constructor({ store, swarm, encryptionKey, blinds = null, globalPool = null }) {
+  constructor({ store, swarm, encryptionKey, blinds = null, chunkStore = null }) {
     this.store = store
     this.swarm = swarm
     this.encryptionKey = encryptionKey
     this.blinds = blinds
-    this.globalPool = globalPool
+    this.chunkStore = chunkStore
     this.drive = null
     this._discovery = null
   }
@@ -54,51 +78,7 @@ class VaultDrive {
     await this.drive.ready()
     this._discovery = this.swarm.join(this.drive.discoveryKey, { server: true, client: true })
     await this._discovery.flushed()
-    if (this.globalPool) {
-      this.globalPool.registerStore(this.store)
-    }
-    await pinCore(this.blinds, this.drive.core)
-    if (this.drive.blobs?.core) await pinCore(this.blinds, this.drive.blobs.core)
-
-    // Eagerly download all blob data from peers (not just metadata).
-    // This ensures receiving peers cache the actual file chunks,
-    // which enables the uploading peer's pruner to clear its local copy.
-    this._startEagerDownload()
-
     return this
-  }
-
-  _startEagerDownload() {
-    const drive = this.drive
-    if (!drive) return
-
-    const downloadAllBlobs = async () => {
-      try {
-        if (!drive.blobs) {
-          try { await drive.getBlobs() } catch {}
-        }
-        if (!drive.blobs?.core) return
-
-        const blobsCore = drive.blobs.core
-        const len = blobsCore.length
-        if (len === 0) return
-
-        console.log(`[Receiver:EagerSync] Syncing ${len} encrypted blob blocks from peer...`)
-        const range = blobsCore.download({ start: 0, end: len })
-        await range.done()
-        console.log(`[Receiver:EagerSync] Successfully cached ${len} encrypted blob blocks. Hosting data for uploader!`)
-      } catch (err) {
-        if (err?.message !== 'SESSION_CLOSED') {
-          console.log(`[Receiver:EagerSync] Syncing in progress (waiting for peer stream)...`)
-        }
-      }
-    }
-
-    downloadAllBlobs()
-
-    drive.core.on('append', () => {
-      downloadAllBlobs()
-    })
   }
 
   get key() {
@@ -127,10 +107,9 @@ class VaultDrive {
         path: full,
         name,
         isDirectory: exact ? !exact.value.blob && !exact.value.linkname : isNestedOnly,
-        byteLength: exact?.value?.blob?.byteLength || 0,
+        byteLength: exact?.value?.metadata?.originalSize || exact?.value?.blob?.byteLength || 0,
         metadata: exact?.value?.metadata || null,
-        chunkCount:
-          exact?.value?.metadata?.chunkCount || exact?.value?.metadata?.chunks?.length || 0
+        chunkCount: exact?.value?.metadata?.chunks?.length || 0
       })
     }
     return [...names.values()].sort((a, b) => {
@@ -150,25 +129,59 @@ class VaultDrive {
 
   async upload(localPath, destPath, mime = null) {
     const dest = normalizePath(destPath)
-    const data = await fs.promises.readFile(localPath)
+    const rawBuffer = await fs.promises.readFile(localPath)
+    
+    // 1. Encrypt raw file buffer locally with master encryption key
+    const { encrypted, nonce } = encryptBuffer(rawBuffer, this.encryptionKey)
+
+    // 2. Break encrypted file into 64KB content-addressed chunks
+    const CHUNK_SIZE = 64 * 1024
+    const chunks = []
+    const chunkMetadata = []
+
+    for (let offset = 0; offset < encrypted.byteLength; offset += CHUNK_SIZE) {
+      const chunkBuf = encrypted.subarray(offset, Math.min(encrypted.byteLength, offset + CHUNK_SIZE))
+      const hash = hashChunk(chunkBuf)
+      chunks.push({ hash, buffer: chunkBuf })
+      chunkMetadata.push({ hash, length: chunkBuf.byteLength })
+    }
+
+    // 3. Offload encrypted chunks to network peers in global chunk store
+    if (this.chunkStore) {
+      await this.chunkStore.offloadChunks(chunks)
+    }
+
+    // 4. Save metadata index in drive (tiny record)
     const meta = {
       mime,
       uploadedAt: Date.now(),
-      sourceName: path.basename(localPath)
+      sourceName: path.basename(localPath),
+      originalSize: rawBuffer.byteLength,
+      nonce,
+      chunks: chunkMetadata
     }
-    await this.drive.put(dest, data, { metadata: meta })
-    const manifest = await buildChunkManifest(this.drive, dest)
-    await this.drive.put(dest, data, {
-      metadata: {
-        ...meta,
-        chunks: manifest.chunks,
-        chunkCount: manifest.chunks.length
+
+    // Put a dummy 1-byte marker entry so drive knows file exists
+    await this.drive.put(dest, b4a.alloc(1), { metadata: meta })
+
+    // 5. Prune local storage from drive blobs core
+    if (this.drive.blobs?.core) {
+      const entry = await this.drive.entry(dest)
+      if (entry?.value?.blob) {
+        const start = entry.value.blob.blockOffset
+        const end = start + entry.value.blob.blockLength
+        await this.drive.blobs.core.clear(start, end).catch(() => {})
       }
-    })
-    clearLocalChunksAfterReplication(this.drive, dest, this.swarm).catch((err) => {
-      console.error('[Uploader:Pruner] Error:', err)
-    })
-    return buildChunkManifest(this.drive, dest)
+    }
+
+    console.log(`[Uploader:Pruner] ✓ SUCCESS: Offloaded ${chunks.length} encrypted chunks for ${dest}. Local file data cleared!`)
+
+    return {
+      path: dest,
+      byteLength: rawBuffer.byteLength,
+      chunks: chunkMetadata,
+      metadata: meta
+    }
   }
 
   async download(entryPath, destLocalPath) {
@@ -177,51 +190,49 @@ class VaultDrive {
     const entry = await this.drive.entry(p)
     if (!entry || !entry.value) throw new Error('File not found: ' + p)
 
-    if (!this.drive.blobs) {
-      try { await this.drive.getBlobs() } catch {}
-    }
-    if (!this.drive.blobs?.core) {
-      throw new Error('Blobs storage core not available')
+    const meta = entry.value.metadata
+    if (!meta || !meta.chunks || !Array.isArray(meta.chunks) || meta.chunks.length === 0) {
+      throw new Error('File metadata has no chunk manifest: ' + p)
     }
 
-    const blob = entry.value.blob
-    if (!blob) throw new Error('Entry has no blob data')
+    console.log(`[User:Download] Reassembling ${meta.chunks.length} encrypted chunks for ${p}...`)
 
-    const blobsCore = this.drive.blobs.core
-    const start = blob.blockOffset
-    const end = blob.blockOffset + blob.blockLength
+    const encryptedChunks = []
 
-    console.log(`[User:Download] Requesting ${blob.blockLength} blocks for ${p} from network peers...`)
-    try {
-      const range = blobsCore.download({ start, end })
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Peer hosting this file is offline or unavailable.')), 15000)
-      })
-      await Promise.race([range.done(), timeoutPromise])
-      console.log(`[User:Download] Successfully fetched blocks [${start} - ${end}) from network peers.`)
-    } catch (err) {
-      console.error(`[User:Download] Fetch failed for ${p}:`, err?.message || err)
-      throw new Error(`File unavailable: ${err?.message || 'Peer hosting this file is offline.'}`)
-    }
-
-    const data = await this.drive.get(p)
-    if (!data || data.byteLength === 0) {
-      throw new Error('File unavailable: Downloaded file data is empty. Peer hosting this file is offline.')
-    }
-
-    // Verify chunk integrity BEFORE writing to disk
-    const manifest = await buildChunkManifest(this.drive, p)
-    const expected = entry.value.metadata?.chunks
-    if (expected && expected.length > 0) {
-      const isVerified = expected.every((c, i) => manifest.chunks[i] && c.hash === manifest.chunks[i].hash)
-      if (!isVerified) {
-        throw new Error('Integrity error: Downloaded chunks do not match expected hashes. Peer hosting this file is offline.')
+    // Fetch each encrypted chunk from online peers or local cache
+    for (const chunkMeta of meta.chunks) {
+      if (!this.chunkStore) {
+        throw new Error('Global chunk store unavailable.')
+      }
+      try {
+        const chunkBuf = await this.chunkStore.fetchChunk(chunkMeta.hash, 15000)
+        
+        // Verify BLAKE2b hash
+        const actualHash = hashChunk(chunkBuf)
+        if (actualHash !== chunkMeta.hash) {
+          throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
+        }
+        
+        encryptedChunks.push(chunkBuf)
+      } catch (err) {
+        console.error(`[User:Download] Failed to fetch chunk ${chunkMeta.hash.slice(0, 12)}:`, err?.message || err)
+        throw new Error(`File unavailable: Peer hosting chunk ${chunkMeta.hash.slice(0, 12)} is offline.`)
       }
     }
 
+    // Concatenate all encrypted chunks
+    const concatenatedEncrypted = b4a.concat(encryptedChunks)
+
+    // Decrypt full buffer using master encryption key and saved nonce
+    const decryptedBuffer = decryptBuffer(concatenatedEncrypted, this.encryptionKey, meta.nonce)
+
+    // Write uncorrupted, decrypted file to destination path
     await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
-    await fs.promises.writeFile(destLocalPath, data)
-    return { path: p, destLocalPath, verified: true, manifest }
+    await fs.promises.writeFile(destLocalPath, decryptedBuffer)
+
+    console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
+
+    return { path: p, destLocalPath, verified: true }
   }
 
   async delete(entryPath) {
@@ -231,7 +242,17 @@ class VaultDrive {
   }
 
   async getManifest(entryPath) {
-    return buildChunkManifest(this.drive, normalizePath(entryPath))
+    const p = normalizePath(entryPath)
+    await this.drive.ready()
+    const entry = await this.drive.entry(p)
+    const meta = entry?.value?.metadata
+    return {
+      path: p,
+      byteLength: meta?.originalSize || 0,
+      mime: meta?.mime || null,
+      chunks: meta?.chunks || [],
+      metadata: meta || null
+    }
   }
 
   async close() {

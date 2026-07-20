@@ -27,6 +27,9 @@ class GlobalChunkStore {
     await fs.promises.mkdir(this.cacheDir, { recursive: true })
 
     this.swarm.on('connection', this._onConnection)
+    for (const conn of this.swarm.connections) {
+      this._onConnection(conn)
+    }
 
     this.discovery = this.swarm.join(this.topic, {
       server: true,
@@ -38,6 +41,9 @@ class GlobalChunkStore {
   }
 
   _onConnection(conn) {
+    if (conn._chunkStoreHandled) return
+    conn._chunkStoreHandled = true
+
     console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${this.swarm.connections.size}`)
 
     let buffer = b4a.alloc(0)

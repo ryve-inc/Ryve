@@ -56,7 +56,7 @@ console.log('Application storage:', storageDir)
 pear.updater.on('updating', () => pipe.write('updating'))
 pear.updater.on('updated', () => pipe.write('updated'))
 
-const globalPool = new GlobalPeerPool({ swarm, store: pearStore })
+const globalPool = new GlobalPeerPool({ swarm })
 globalPool.init().catch((err) => {
   console.error('[GlobalPeerPool] Init error:', err)
 })

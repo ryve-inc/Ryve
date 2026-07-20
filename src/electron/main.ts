@@ -102,8 +102,14 @@ function getWorker(specifier: string) {
   ])
   const pipe = new FramedStream(worker)
 
-  const sendWorkerStdout = (data: Buffer) => sendToAll('pear:worker:stdout:' + specifier, data)
-  const sendWorkerStderr = (data: Buffer) => sendToAll('pear:worker:stderr:' + specifier, data)
+  const sendWorkerStdout = (data: Buffer) => {
+    process.stdout.write(data)
+    sendToAll('pear:worker:stdout:' + specifier, data)
+  }
+  const sendWorkerStderr = (data: Buffer) => {
+    process.stderr.write(data)
+    sendToAll('pear:worker:stderr:' + specifier, data)
+  }
   const sendWorkerIPC = (data: Buffer) => sendToAll('pear:worker:ipc:' + specifier, data)
   const onBeforeQuit = () => pipe.destroy()
 

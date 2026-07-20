@@ -59,7 +59,50 @@ class VaultDrive {
     }
     await pinCore(this.blinds, this.drive.core)
     if (this.drive.blobs?.core) await pinCore(this.blinds, this.drive.blobs.core)
+
+    // Eagerly download all blob data from peers (not just metadata).
+    // This ensures receiving peers cache the actual file chunks,
+    // which enables the uploading peer's pruner to clear its local copy.
+    this._startEagerDownload()
+
     return this
+  }
+
+  _startEagerDownload() {
+    const drive = this.drive
+    if (!drive) return
+
+    const downloadAllBlobs = async () => {
+      try {
+        // Ensure blobs core is initialized
+        if (!drive.blobs) {
+          try { await drive.getBlobs() } catch {}
+        }
+        if (!drive.blobs?.core) return
+
+        const blobsCore = drive.blobs.core
+        const len = blobsCore.length
+        if (len === 0) return
+
+        console.log(`[EagerSync] Downloading ${len} blob blocks from peers...`)
+        const range = blobsCore.download({ start: 0, end: len })
+        await range.done()
+        console.log(`[EagerSync] Downloaded ${len} blob blocks successfully.`)
+      } catch (err) {
+        // Non-fatal: blocks might not be available yet
+        if (err?.message !== 'SESSION_CLOSED') {
+          console.log(`[EagerSync] Partial download (some blocks not yet available from peers)`)
+        }
+      }
+    }
+
+    // Download existing blobs now
+    downloadAllBlobs()
+
+    // Re-download when new blobs arrive from peers
+    drive.core.on('append', () => {
+      downloadAllBlobs()
+    })
   }
 
   get key() {

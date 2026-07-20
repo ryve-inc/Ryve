@@ -38,28 +38,28 @@ function hashChunk(buf) {
   return b4a.toString(hypercoreCrypto.hash(buf), 'hex')
 }
 
-import crypto from 'node:crypto'
+import sodium from 'sodium-universal'
 
 function encryptBuffer(buf, key) {
-  const nonce = crypto.randomBytes(12)
+  const nonce = b4a.alloc(sodium.crypto_secretbox_NONCEBYTES)
+  sodium.randombytes_buf(nonce)
   const key32 = hypercoreCrypto.hash(key)
-  const cipher = crypto.createCipheriv('aes-256-gcm', key32, nonce)
-  const encrypted = b4a.concat([cipher.update(buf), cipher.final()])
-  const tag = cipher.getAuthTag()
+  const encrypted = b4a.alloc(buf.byteLength + sodium.crypto_secretbox_MACBYTES)
+  sodium.crypto_secretbox_easy(encrypted, buf, nonce, key32)
   return {
-    encrypted: b4a.concat([tag, encrypted]),
+    encrypted,
     nonce: b4a.toString(nonce, 'hex')
   }
 }
 
-function decryptBuffer(authAndEncrypted, key, nonceHex) {
+function decryptBuffer(encrypted, key, nonceHex) {
   const nonce = b4a.from(nonceHex, 'hex')
   const key32 = hypercoreCrypto.hash(key)
-  const tag = authAndEncrypted.subarray(0, 16)
-  const encrypted = authAndEncrypted.subarray(16)
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key32, nonce)
-  decipher.setAuthTag(tag)
-  const decrypted = b4a.concat([decipher.update(encrypted), decipher.final()])
+  const decrypted = b4a.alloc(encrypted.byteLength - sodium.crypto_secretbox_MACBYTES)
+  const ok = sodium.crypto_secretbox_open_easy(decrypted, encrypted, nonce, key32)
+  if (!ok) {
+    throw new Error('Cryptographic authentication failed. Key mismatch or corrupted file.')
+  }
   return decrypted
 }
 

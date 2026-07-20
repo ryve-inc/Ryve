@@ -59,15 +59,15 @@ class GlobalChunkStore {
       while (buffer.byteLength > 0) {
         const cmd = buffer[0]
 
-        // 1. STORE_CHUNK: [1 byte cmd] [32 bytes hash] [4 bytes len] [payload]
+        // 1. STORE_CHUNK: [1 byte cmd] [64 bytes hash] [4 bytes len] [payload]
         if (cmd === CMD_STORE_CHUNK) {
-          if (buffer.byteLength < 37) break // Wait for header
-          const hash = b4a.toString(buffer.subarray(1, 33), 'ascii')
-          const length = buffer.readUInt32BE(33)
-          const totalPacketSize = 37 + length
+          if (buffer.byteLength < 69) break // Wait for header
+          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
+          const length = buffer.readUInt32BE(65)
+          const totalPacketSize = 69 + length
           if (buffer.byteLength < totalPacketSize) break // Wait for full payload
 
-          const chunkBuf = buffer.subarray(37, totalPacketSize)
+          const chunkBuf = buffer.subarray(69, totalPacketSize)
           const chunkPath = path.join(this.cacheDir, hash + '.bin')
           
           // Asynchronously write binary payload directly to cache without blocking thread
@@ -77,39 +77,39 @@ class GlobalChunkStore {
           buffer = buffer.subarray(totalPacketSize)
         }
 
-        // 2. GET_CHUNK: [1 byte cmd] [32 bytes hash]
+        // 2. GET_CHUNK: [1 byte cmd] [64 bytes hash]
         else if (cmd === CMD_GET_CHUNK) {
-          if (buffer.byteLength < 33) break
-          const hash = b4a.toString(buffer.subarray(1, 33), 'ascii')
-          buffer = buffer.subarray(33)
+          if (buffer.byteLength < 65) break
+          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
+          buffer = buffer.subarray(65)
 
           const chunkPath = path.join(this.cacheDir, hash + '.bin')
           try {
             const rawBuf = await fs.promises.readFile(chunkPath)
-            // Respond with binary frame: [0x03] [32b hash] [4b len] [payload]
-            const header = b4a.alloc(37)
+            // Respond with binary frame: [0x03] [64b hash] [4b len] [payload]
+            const header = b4a.alloc(69)
             header[0] = CMD_CHUNK_DATA
-            header.write(hash, 1, 32, 'ascii')
-            header.writeUInt32BE(rawBuf.byteLength, 33)
+            header.write(hash, 1, 64, 'ascii')
+            header.writeUInt32BE(rawBuf.byteLength, 65)
             conn.write(b4a.concat([header, rawBuf]))
             console.log(`[ChunkStore:Server] Served binary chunk ${hash.slice(0, 12)} (${rawBuf.byteLength} bytes)`)
           } catch {
-            const notFoundHeader = b4a.alloc(33)
+            const notFoundHeader = b4a.alloc(65)
             notFoundHeader[0] = CMD_NOT_FOUND
-            notFoundHeader.write(hash, 1, 32, 'ascii')
+            notFoundHeader.write(hash, 1, 64, 'ascii')
             conn.write(notFoundHeader)
           }
         }
 
-        // 3. CHUNK_DATA: [1 byte cmd] [32 bytes hash] [4 bytes len] [payload]
+        // 3. CHUNK_DATA: [1 byte cmd] [64 bytes hash] [4 bytes len] [payload]
         else if (cmd === CMD_CHUNK_DATA) {
-          if (buffer.byteLength < 37) break
-          const hash = b4a.toString(buffer.subarray(1, 33), 'ascii')
-          const length = buffer.readUInt32BE(33)
-          const totalPacketSize = 37 + length
+          if (buffer.byteLength < 69) break
+          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
+          const length = buffer.readUInt32BE(65)
+          const totalPacketSize = 69 + length
           if (buffer.byteLength < totalPacketSize) break
 
-          const chunkBuf = b4a.from(buffer.subarray(37, totalPacketSize))
+          const chunkBuf = b4a.from(buffer.subarray(69, totalPacketSize))
           buffer = buffer.subarray(totalPacketSize)
 
           const pending = this.activeRequests.get(hash)
@@ -119,11 +119,11 @@ class GlobalChunkStore {
           }
         }
 
-        // 4. NOT_FOUND: [1 byte cmd] [32 bytes hash]
+        // 4. NOT_FOUND: [1 byte cmd] [64 bytes hash]
         else if (cmd === CMD_NOT_FOUND) {
-          if (buffer.byteLength < 33) break
-          const hash = b4a.toString(buffer.subarray(1, 33), 'ascii')
-          buffer = buffer.subarray(33)
+          if (buffer.byteLength < 65) break
+          const hash = b4a.toString(buffer.subarray(1, 65), 'ascii')
+          buffer = buffer.subarray(65)
 
           const pending = this.activeRequests.get(hash)
           if (pending) {
@@ -158,11 +158,11 @@ class GlobalChunkStore {
       const batch = chunkList.slice(i, i + BATCH_SIZE)
 
       for (const chunk of batch) {
-        // Construct binary packet: [0x01] [32b hash] [4b len] [payload]
-        const header = b4a.alloc(37)
+        // Construct binary packet: [0x01] [64b hash] [4b len] [payload]
+        const header = b4a.alloc(69)
         header[0] = CMD_STORE_CHUNK
-        header.write(chunk.hash, 1, 32, 'ascii')
-        header.writeUInt32BE(chunk.buffer.byteLength, 33)
+        header.write(chunk.hash, 1, 64, 'ascii')
+        header.writeUInt32BE(chunk.buffer.byteLength, 65)
 
         const packet = b4a.concat([header, chunk.buffer])
 
@@ -218,10 +218,10 @@ class GlobalChunkStore {
         }
       })
 
-      // Send binary request: [0x02] [32b hash]
-      const reqHeader = b4a.alloc(33)
+      // Send binary request: [0x02] [64b hash]
+      const reqHeader = b4a.alloc(65)
       reqHeader[0] = CMD_GET_CHUNK
-      reqHeader.write(hash, 1, 32, 'ascii')
+      reqHeader.write(hash, 1, 64, 'ascii')
 
       for (const conn of this.swarm.connections) {
         try {

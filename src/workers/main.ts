@@ -81,9 +81,11 @@ function withLock(fn) {
 
 swarm.on('connection', (conn) => {
   state.peerCount++
+  console.log(`[Network:Swarm] Peer connected! Active Hyperswarm peers: ${state.peerCount}`)
   emit({ type: 'event', name: 'status', data: statusPayload() })
   conn.on('close', () => {
     state.peerCount = Math.max(0, state.peerCount - 1)
+    console.log(`[Network:Swarm] Peer disconnected. Remaining peers: ${state.peerCount}`)
     emit({ type: 'event', name: 'status', data: statusPayload() })
   })
   if (state.vaultStore) state.vaultStore.replicate(conn)

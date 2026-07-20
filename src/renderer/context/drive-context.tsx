@@ -88,6 +88,7 @@ type DriveContextValue = {
   onEntryClick: (entry: DriveEntry) => Promise<void>
   showDetail: (path: string, shareId?: string | null) => Promise<void>
   closeDetail: () => void
+  uploadPaths: () => Promise<void>
   uploadFiles: (fileList: FileList | File[], opts?: { share?: boolean }) => Promise<void>
   askDialog: (opts: {
     title: string
@@ -382,39 +383,40 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [refreshFiles, showDetail]
   )
 
+  const uploadPaths = useCallback(async () => {
+    const bridge = getBridge()
+    const paths = await bridge.chooseUploadFiles()
+    if (!paths || !paths.length) return
+    for (const localPath of paths) {
+      const fileName = localPath.split(/[/\\]/).filter(Boolean).pop() || 'file'
+      const destPath = joinPath(currentDirRef.current, fileName)
+      showToast('Uploading ' + fileName + '…')
+      await rpc('upload', { localPath, destPath, mime: null })
+    }
+    showToast('Upload complete')
+    await refreshFiles()
+  }, [refreshFiles, showToast])
+
   const uploadFiles = useCallback(
     async (fileList: FileList | File[], { share = false } = {}) => {
       const bridge = getBridge()
       const files = [...fileList]
       if (!files.length) return
-      if (share && !activeShareIdRef.current) throw new Error('No share selected')
       for (const file of files) {
-        const localPath = bridge.getPathForFile(file)
+        let localPath = bridge.getPathForFile(file)
         if (!localPath) {
-          throw new Error(
-            'Cannot read path for "' + file.name + '". Use Upload to pick a file from disk.'
-          )
+          const nativePaths = await bridge.chooseUploadFiles()
+          if (!nativePaths || !nativePaths.length) return
+          localPath = nativePaths[0]
         }
-        const destPath = share
-          ? joinPath(shareDirRef.current || '/', file.name)
-          : joinPath(currentDirRef.current, file.name)
+        const destPath = joinPath(currentDirRef.current, file.name)
         showToast('Uploading ' + file.name + '…')
-        if (share) {
-          await rpc('uploadToShare', {
-            id: activeShareIdRef.current,
-            localPath,
-            destPath,
-            mime: file.type || null
-          })
-        } else {
-          await rpc('upload', { localPath, destPath, mime: file.type || null })
-        }
+        await rpc('upload', { localPath, destPath, mime: file.type || null })
       }
       showToast('Upload complete')
-      if (share) await refreshShareFiles()
-      else await refreshFiles()
+      await refreshFiles()
     },
-    [refreshFiles, refreshShareFiles, showToast]
+    [refreshFiles, showToast]
   )
 
   const navigate = useCallback(
@@ -836,6 +838,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       onEntryClick,
       showDetail,
       closeDetail,
+      uploadPaths,
       uploadFiles,
       askDialog,
       askText,

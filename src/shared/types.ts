@@ -58,6 +58,7 @@ export type BridgeApi = {
   getPathForFile: (file: File) => string
   writeClipboard: (text: string) => void
   chooseDownloadPath: (defaultName?: string) => Promise<string | null>
+  chooseUploadFiles: () => Promise<string[]>
 }
 
 declare global {

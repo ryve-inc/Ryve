@@ -74,7 +74,6 @@ class VaultDrive {
 
     const downloadAllBlobs = async () => {
       try {
-        // Ensure blobs core is initialized
         if (!drive.blobs) {
           try { await drive.getBlobs() } catch {}
         }
@@ -84,22 +83,19 @@ class VaultDrive {
         const len = blobsCore.length
         if (len === 0) return
 
-        console.log(`[EagerSync] Downloading ${len} blob blocks from peers...`)
+        console.log(`[Receiver:EagerSync] Syncing ${len} encrypted blob blocks from peer...`)
         const range = blobsCore.download({ start: 0, end: len })
         await range.done()
-        console.log(`[EagerSync] Downloaded ${len} blob blocks successfully.`)
+        console.log(`[Receiver:EagerSync] Successfully cached ${len} encrypted blob blocks. Hosting data for uploader!`)
       } catch (err) {
-        // Non-fatal: blocks might not be available yet
         if (err?.message !== 'SESSION_CLOSED') {
-          console.log(`[EagerSync] Partial download (some blocks not yet available from peers)`)
+          console.log(`[Receiver:EagerSync] Syncing in progress (waiting for peer stream)...`)
         }
       }
     }
 
-    // Download existing blobs now
     downloadAllBlobs()
 
-    // Re-download when new blobs arrive from peers
     drive.core.on('append', () => {
       downloadAllBlobs()
     })
@@ -169,8 +165,8 @@ class VaultDrive {
         chunkCount: manifest.chunks.length
       }
     })
-    clearLocalChunksAfterReplication(this.drive, dest).catch((err) => {
-      console.error('[Pruner] Background pruning error:', err)
+    clearLocalChunksAfterReplication(this.drive, dest, this.swarm).catch((err) => {
+      console.error('[Uploader:Pruner] Error:', err)
     })
     return buildChunkManifest(this.drive, dest)
   }
@@ -195,16 +191,16 @@ class VaultDrive {
     const start = blob.blockOffset
     const end = blob.blockOffset + blob.blockLength
 
-    console.log(`[Download] Fetching ${blob.blockLength} blocks for ${p} from network peers...`)
+    console.log(`[User:Download] Requesting ${blob.blockLength} blocks for ${p} from network peers...`)
     try {
       const range = blobsCore.download({ start, end })
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error('Peer hosting this file is offline or unavailable.')), 15000)
       })
       await Promise.race([range.done(), timeoutPromise])
-      console.log(`[Download] Successfully fetched blocks [${start} - ${end}) from network peers.`)
+      console.log(`[User:Download] Successfully fetched blocks [${start} - ${end}) from network peers.`)
     } catch (err) {
-      console.error(`[Download] Peer block fetch failed for ${p}:`, err?.message || err)
+      console.error(`[User:Download] Fetch failed for ${p}:`, err?.message || err)
       throw new Error(`File unavailable: ${err?.message || 'Peer hosting this file is offline.'}`)
     }
 
@@ -223,7 +219,6 @@ class VaultDrive {
       }
     }
 
-    // Integrity verified! Write uncorrupted file to disk
     await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
     await fs.promises.writeFile(destLocalPath, data)
     return { path: p, destLocalPath, verified: true, manifest }

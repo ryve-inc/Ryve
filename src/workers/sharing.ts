@@ -395,8 +395,8 @@ class ShareManager {
     await share.drive.put(dest, data, {
       metadata: { ...tempMeta, chunks: manifest.chunks, chunkCount: manifest.chunks.length }
     })
-    clearLocalChunksAfterReplication(share.drive, dest).catch((err) => {
-      console.error('[Pruner] Background share pruning error:', err)
+    clearLocalChunksAfterReplication(share.drive, dest, this.swarm).catch((err) => {
+      console.error('[Uploader:Pruner] Background share error:', err)
     })
     return buildChunkManifest(share.drive, dest)
   }

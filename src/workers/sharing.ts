@@ -406,18 +406,56 @@ class ShareManager {
     if (!share) throw new Error('Share not found')
     const p = normalizePath(entryPath)
     assertUnderPrefix(p, share.pathPrefix || '/')
+    await share.drive.ready()
+    const entry = await share.drive.entry(p)
+    if (!entry || !entry.value) throw new Error('File not found: ' + p)
+
+    if (!share.drive.blobs) {
+      try { await share.drive.getBlobs() } catch {}
+    }
+    if (!share.drive.blobs?.core) {
+      throw new Error('Blobs storage core not available')
+    }
+
+    const blob = entry.value.blob
+    if (!blob) throw new Error('Entry has no blob data')
+
+    const blobsCore = share.drive.blobs.core
+    const start = blob.blockOffset
+    const end = blob.blockOffset + blob.blockLength
+
+    console.log(`[ShareDownload] Fetching ${blob.blockLength} blocks for ${p} from network peers...`)
+    try {
+      const range = blobsCore.download({ start, end })
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Peer hosting this file is offline or unavailable.')), 15000)
+      })
+      await Promise.race([range.done(), timeoutPromise])
+      console.log(`[ShareDownload] Successfully fetched blocks [${start} - ${end}) from network peers.`)
+    } catch (err) {
+      console.error(`[ShareDownload] Peer block fetch failed for ${p}:`, err?.message || err)
+      throw new Error(`File unavailable: ${err?.message || 'Peer hosting this file is offline.'}`)
+    }
+
     const data = await share.drive.get(p)
-    if (!data) throw new Error('File not found')
+    if (!data || data.byteLength === 0) {
+      throw new Error('File unavailable: Downloaded file data is empty. Peer hosting this file is offline.')
+    }
+
+    // Verify chunk integrity BEFORE writing to disk
+    const manifest = await buildChunkManifest(share.drive, p)
+    const expected = entry.value.metadata?.chunks
+    if (expected && expected.length > 0) {
+      const isVerified = expected.every((c, i) => manifest.chunks[i] && c.hash === manifest.chunks[i].hash)
+      if (!isVerified) {
+        throw new Error('Integrity error: Downloaded chunks do not match expected hashes. Peer hosting this file is offline.')
+      }
+    }
+
+    // Integrity verified! Write uncorrupted file to disk
     await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
     await fs.promises.writeFile(destLocalPath, data)
-    const entry = await share.drive.entry(p)
-    const expected = entry?.value?.metadata?.chunks
-    const manifest = await buildChunkManifest(share.drive, p)
-    let verified = true
-    if (expected) {
-      verified = expected.every((c, i) => c.hash === manifest.chunks[i]?.hash)
-    }
-    return { path: p, destLocalPath, manifest, verified }
+    return { path: p, destLocalPath, manifest, verified: true }
   }
 
   async getManifest(id, entryPath) {

@@ -50,12 +50,22 @@ class GlobalPeerPool {
   }
 
   _onConnection(conn) {
-    // Only replicate explicitly registered vault/share stores
+    console.log(`[GlobalPeerPool] New peer connected! Active connections: ${this.swarm.connections.size}`)
+
+    conn.on('close', () => {
+      console.log(`[GlobalPeerPool] Peer disconnected. Active connections: ${this.swarm.connections.size}`)
+    })
+
+    // Replicate explicitly registered vault/share stores on new connection
+    this.replicateAllStores(conn)
+  }
+
+  replicateAllStores(conn) {
     for (const store of this.registeredStores) {
       try {
         store.replicate(conn)
       } catch (err) {
-        console.error('[GlobalPeerPool] Replication error on new connection:', err?.message || err)
+        console.error('[GlobalPeerPool] Replication error:', err?.message || err)
       }
     }
   }

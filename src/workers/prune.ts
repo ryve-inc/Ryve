@@ -71,8 +71,9 @@ async function clearLocalChunksAfterReplication(drive, entryPath) {
     return
   }
 
-  const peerCount = blobsCore.peers ? blobsCore.peers.length : 0
-  console.log(`[Pruner] Waiting for peer replication of ${entryPath}. Connected peers: ${peerCount}, Progress: ${uploaded.size}/${blob.blockLength}`)
+  const swarmConns = drive.swarm ? drive.swarm.connections.size : 0
+  const blobPeers = blobsCore.peers ? blobsCore.peers.length : 0
+  console.log(`[Pruner] Waiting for peer replication of ${entryPath}. Swarm sockets: ${swarmConns}, Blobs peers: ${blobPeers}, Progress: ${uploaded.size}/${blob.blockLength}`)
 
   return new Promise((resolve) => {
     let resolved = false

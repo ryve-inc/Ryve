@@ -109,25 +109,35 @@ class GlobalChunkStore {
   }
 
   /**
-   * Line-delimited JSON chunk offloading with 5ms async yields for zero UI lag.
+   * Dynamic K-Replication (K=2 target) chunk offloading with 5ms async yields for zero UI lag.
    */
   async offloadChunks(chunkList) {
-    if (this.swarm.connections.size === 0) {
+    const peers = Array.from(this.swarm.connections)
+    if (peers.length === 0) {
       console.log('[ChunkStore:Uploader] No online peers connected to offload chunks to.')
       return false
     }
 
+    const targetK = Math.min(2, peers.length)
     let successCount = 0
 
-    for (const chunk of chunkList) {
+    for (let i = 0; i < chunkList.length; i++) {
+      const chunk = chunkList[i]
       const linePayload = JSON.stringify({
         type: 'store-chunk',
         hash: chunk.hash,
         data: b4a.toString(chunk.buffer, 'hex')
       }) + '\n'
 
-      // Send line payload to all connected peers over network socket
-      for (const conn of this.swarm.connections) {
+      // Select targetK distinct peers for this chunk using round-robin rotation
+      const targetPeers = []
+      for (let k = 0; k < targetK; k++) {
+        const peerIndex = (i + k) % peers.length
+        targetPeers.push(peers[peerIndex])
+      }
+
+      // Send payload to the K selected target peers
+      for (const conn of targetPeers) {
         try {
           conn.write(linePayload)
         } catch {}
@@ -139,7 +149,7 @@ class GlobalChunkStore {
       await new Promise((resolve) => setTimeout(resolve, 5))
     }
 
-    console.log(`[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks to network peers!`)
+    console.log(`[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} online peers (K=${targetK} replication)!`)
     return successCount === chunkList.length
   }
 

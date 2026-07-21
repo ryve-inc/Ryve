@@ -55,7 +55,13 @@ class GlobalChunkStore {
       for (const line of lines) {
         if (!line.trim()) continue
         try {
-          const msg = JSON.parse(line)
+          const jsonStart = line.indexOf('{')
+          if (jsonStart === -1) continue
+          const jsonEnd = line.lastIndexOf('}')
+          if (jsonEnd === -1 || jsonEnd < jsonStart) continue
+
+          const cleanJson = line.slice(jsonStart, jsonEnd + 1)
+          const msg = JSON.parse(cleanJson)
           if (!msg || typeof msg !== 'object') continue
 
           // 1. Peer requesting a chunk by hash

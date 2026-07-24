@@ -1,4 +1,5 @@
 import { InviteModal } from '@/components/invite-modal'
+import { PreviewModal } from '@/components/preview-modal'
 import { PromptDialog } from '@/components/prompt-dialog'
 import { Toast } from '@/components/toast'
 import { DriveProvider, useDrive } from '@/context/drive-context'
@@ -16,7 +17,6 @@ function Atmosphere() {
     </>
   )
 }
-
 function AppViews() {
   const { view } = useDrive()
 
@@ -27,6 +27,7 @@ function AppViews() {
       <Toast />
       <InviteModal />
       <PromptDialog />
+      <PreviewModal />
     </>
   )
 }

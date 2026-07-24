@@ -102,8 +102,14 @@ function getWorker(specifier: string) {
   ])
   const pipe = new FramedStream(worker)
 
-  const sendWorkerStdout = (data: Buffer) => sendToAll('pear:worker:stdout:' + specifier, data)
-  const sendWorkerStderr = (data: Buffer) => sendToAll('pear:worker:stderr:' + specifier, data)
+  const sendWorkerStdout = (data: Buffer) => {
+    process.stdout.write(data)
+    sendToAll('pear:worker:stdout:' + specifier, data)
+  }
+  const sendWorkerStderr = (data: Buffer) => {
+    process.stderr.write(data)
+    sendToAll('pear:worker:stderr:' + specifier, data)
+  }
   const sendWorkerIPC = (data: Buffer) => sendToAll('pear:worker:ipc:' + specifier, data)
   const onBeforeQuit = () => pipe.destroy()
 
@@ -128,14 +134,27 @@ function getWorker(specifier: string) {
 ipcMain.handle('dialog:savePath', async (evt, defaultName?: string) => {
   const win = BrowserWindow.fromWebContents(evt.sender)
   const options: Electron.SaveDialogOptions = {
-    defaultPath: defaultName || 'download',
-    properties: ['createDirectory', 'showOverwriteConfirmation']
+    title: 'Download File',
+    defaultPath: defaultName || 'download'
   }
   const result = win
     ? await dialog.showSaveDialog(win, options)
     : await dialog.showSaveDialog(options)
   if (result.canceled || !result.filePath) return null
   return result.filePath
+})
+
+ipcMain.handle('dialog:openFile', async (evt) => {
+  const win = BrowserWindow.fromWebContents(evt.sender)
+  const options: Electron.OpenDialogOptions = {
+    title: 'Select File to Upload',
+    properties: ['openFile', 'multiSelections']
+  }
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options)
+  if (result.canceled || !result.filePaths) return []
+  return result.filePaths
 })
 
 async function createWindow() {

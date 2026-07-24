@@ -4,8 +4,7 @@ import fs from 'bare-fs'
 import Hyperdrive from 'hyperdrive'
 import idEnc from 'hypercore-id-encoding'
 import b4a from 'b4a'
-import { buildChunkManifest } from './chunk-manifest'
-import { pinCore } from './blind'
+import hypercoreCrypto from 'hypercore-crypto'
 
 function normalizePath(p) {
   if (!p || p === '/') return '/'
@@ -35,12 +34,42 @@ function underPrefix(filePath, prefix) {
   return p === pre || p.startsWith(pre + '/')
 }
 
+function hashChunk(buf) {
+  return b4a.toString(hypercoreCrypto.hash(buf), 'hex')
+}
+
+import sodium from 'sodium-universal'
+
+function encryptBuffer(buf, key) {
+  const nonce = b4a.alloc(sodium.crypto_secretbox_NONCEBYTES)
+  sodium.randombytes_buf(nonce)
+  const key32 = hypercoreCrypto.hash(key)
+  const encrypted = b4a.alloc(buf.byteLength + sodium.crypto_secretbox_MACBYTES)
+  sodium.crypto_secretbox_easy(encrypted, buf, nonce, key32)
+  return {
+    encrypted,
+    nonce: b4a.toString(nonce, 'hex')
+  }
+}
+
+function decryptBuffer(encrypted, key, nonceHex) {
+  const nonce = b4a.from(nonceHex, 'hex')
+  const key32 = hypercoreCrypto.hash(key)
+  const decrypted = b4a.alloc(encrypted.byteLength - sodium.crypto_secretbox_MACBYTES)
+  const ok = sodium.crypto_secretbox_open_easy(decrypted, encrypted, nonce, key32)
+  if (!ok) {
+    throw new Error('Cryptographic authentication failed. Key mismatch or corrupted file.')
+  }
+  return decrypted
+}
+
 class VaultDrive {
-  constructor({ store, swarm, encryptionKey, blinds = null }) {
+  constructor({ store, swarm, encryptionKey, blinds = null, chunkStore = null }) {
     this.store = store
     this.swarm = swarm
     this.encryptionKey = encryptionKey
     this.blinds = blinds
+    this.chunkStore = chunkStore
     this.drive = null
     this._discovery = null
   }
@@ -52,8 +81,6 @@ class VaultDrive {
     await this.drive.ready()
     this._discovery = this.swarm.join(this.drive.discoveryKey, { server: true, client: true })
     await this._discovery.flushed()
-    await pinCore(this.blinds, this.drive.core)
-    if (this.drive.blobs?.core) await pinCore(this.blinds, this.drive.blobs.core)
     return this
   }
 
@@ -83,10 +110,9 @@ class VaultDrive {
         path: full,
         name,
         isDirectory: exact ? !exact.value.blob && !exact.value.linkname : isNestedOnly,
-        byteLength: exact?.value?.blob?.byteLength || 0,
+        byteLength: exact?.value?.metadata?.originalSize || exact?.value?.blob?.byteLength || 0,
         metadata: exact?.value?.metadata || null,
-        chunkCount:
-          exact?.value?.metadata?.chunkCount || exact?.value?.metadata?.chunks?.length || 0
+        chunkCount: exact?.value?.metadata?.chunks?.length || 0
       })
     }
     return [...names.values()].sort((a, b) => {
@@ -106,38 +132,116 @@ class VaultDrive {
 
   async upload(localPath, destPath, mime = null) {
     const dest = normalizePath(destPath)
-    const data = await fs.promises.readFile(localPath)
+    const rawBuffer = await fs.promises.readFile(localPath)
+    
+    // 1. Encrypt raw file buffer locally with master encryption key
+    const { encrypted, nonce } = encryptBuffer(rawBuffer, this.encryptionKey)
+
+    // 2. Break encrypted file into 64KB content-addressed chunks
+    const CHUNK_SIZE = 64 * 1024
+    const chunks = []
+    const chunkMetadata = []
+
+    let index = 0
+    for (let offset = 0; offset < encrypted.byteLength; offset += CHUNK_SIZE) {
+      const chunkBuf = encrypted.subarray(offset, Math.min(encrypted.byteLength, offset + CHUNK_SIZE))
+      const hash = hashChunk(chunkBuf)
+      chunks.push({ hash, buffer: chunkBuf })
+      chunkMetadata.push({
+        index: index++,
+        offset,
+        length: chunkBuf.byteLength,
+        hash
+      })
+    }
+
+    // 3. Offload encrypted chunks to network peers in global chunk store
+    if (this.chunkStore) {
+      await this.chunkStore.offloadChunks(chunks)
+    }
+
+    // 4. Save metadata index in drive (tiny record)
     const meta = {
       mime,
       uploadedAt: Date.now(),
-      sourceName: path.basename(localPath)
+      sourceName: path.basename(localPath),
+      originalSize: rawBuffer.byteLength,
+      nonce,
+      chunks: chunkMetadata
     }
-    await this.drive.put(dest, data, { metadata: meta })
-    const manifest = await buildChunkManifest(this.drive, dest)
-    await this.drive.put(dest, data, {
-      metadata: {
-        ...meta,
-        chunks: manifest.chunks,
-        chunkCount: manifest.chunks.length
+
+    // Put a dummy 1-byte marker entry so drive knows file exists
+    await this.drive.put(dest, b4a.alloc(1), { metadata: meta })
+
+    // 5. Prune local storage from drive blobs core
+    if (this.drive.blobs?.core) {
+      const entry = await this.drive.entry(dest)
+      if (entry?.value?.blob) {
+        const start = entry.value.blob.blockOffset
+        const end = start + entry.value.blob.blockLength
+        await this.drive.blobs.core.clear(start, end).catch(() => {})
       }
-    })
-    return buildChunkManifest(this.drive, dest)
+    }
+
+    console.log(`[Uploader:Pruner] ✓ SUCCESS: Offloaded ${chunks.length} encrypted chunks for ${dest}. Local file data cleared!`)
+
+    return {
+      path: dest,
+      byteLength: rawBuffer.byteLength,
+      chunks: chunkMetadata,
+      metadata: meta
+    }
   }
 
   async download(entryPath, destLocalPath) {
     const p = normalizePath(entryPath)
-    const data = await this.drive.get(p)
-    if (!data) throw new Error('File not found: ' + p)
-    await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
-    await fs.promises.writeFile(destLocalPath, data)
+    await this.drive.ready()
     const entry = await this.drive.entry(p)
-    const expected = entry?.value?.metadata?.chunks
-    const manifest = await buildChunkManifest(this.drive, p)
-    let verified = true
-    if (expected) {
-      verified = expected.every((c, i) => c.hash === manifest.chunks[i]?.hash)
+    if (!entry || !entry.value) throw new Error('File not found: ' + p)
+
+    const meta = entry.value.metadata
+    if (!meta || !meta.chunks || !Array.isArray(meta.chunks) || meta.chunks.length === 0) {
+      throw new Error('File metadata has no chunk manifest: ' + p)
     }
-    return { path: p, destLocalPath, verified, manifest }
+
+    console.log(`[User:Download] Reassembling ${meta.chunks.length} encrypted chunks for ${p}...`)
+
+    const encryptedChunks = []
+
+    // Fetch each encrypted chunk from online peers or local cache
+    for (const chunkMeta of meta.chunks) {
+      if (!this.chunkStore) {
+        throw new Error('Global chunk store unavailable.')
+      }
+      try {
+        const chunkBuf = await this.chunkStore.fetchChunk(chunkMeta.hash, 15000)
+        
+        // Verify BLAKE2b hash
+        const actualHash = hashChunk(chunkBuf)
+        if (actualHash !== chunkMeta.hash) {
+          throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
+        }
+        
+        encryptedChunks.push(chunkBuf)
+      } catch (err) {
+        console.error(`[User:Download] Failed to fetch chunk ${chunkMeta.hash.slice(0, 12)}:`, err?.message || err)
+        throw new Error(`File unavailable: Peer hosting chunk ${chunkMeta.hash.slice(0, 12)} is offline.`)
+      }
+    }
+
+    // Concatenate all encrypted chunks
+    const concatenatedEncrypted = b4a.concat(encryptedChunks)
+
+    // Decrypt full buffer using master encryption key and saved nonce
+    const decryptedBuffer = decryptBuffer(concatenatedEncrypted, this.encryptionKey, meta.nonce)
+
+    // Write uncorrupted, decrypted file to destination path
+    await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
+    await fs.promises.writeFile(destLocalPath, decryptedBuffer)
+
+    console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
+
+    return { path: p, destLocalPath, verified: true }
   }
 
   async delete(entryPath) {
@@ -147,7 +251,24 @@ class VaultDrive {
   }
 
   async getManifest(entryPath) {
-    return buildChunkManifest(this.drive, normalizePath(entryPath))
+    const p = normalizePath(entryPath)
+    await this.drive.ready()
+    const entry = await this.drive.entry(p)
+    const meta = entry?.value?.metadata
+    const rawChunks = meta?.chunks || []
+    const chunks = rawChunks.map((c, i) => ({
+      index: c.index !== undefined ? c.index : i,
+      offset: c.offset !== undefined ? c.offset : i * (64 * 1024),
+      length: c.length || 64 * 1024,
+      hash: c.hash
+    }))
+    return {
+      path: p,
+      byteLength: meta?.originalSize || 0,
+      mime: meta?.mime || null,
+      chunks,
+      metadata: meta || null
+    }
   }
 
   async close() {

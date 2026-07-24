@@ -37,7 +37,8 @@ const bridge: BridgeApi = {
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   writeClipboard: (text) => clipboard.writeText(String(text)),
-  chooseDownloadPath: (defaultName) => ipcRenderer.invoke('dialog:savePath', defaultName)
+  chooseDownloadPath: (defaultName) => ipcRenderer.invoke('dialog:savePath', defaultName),
+  chooseUploadFiles: () => ipcRenderer.invoke('dialog:openFile')
 }
 
 contextBridge.exposeInMainWorld('bridge', bridge)

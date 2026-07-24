@@ -4,7 +4,7 @@ import { DownloadButton } from '@/components/buttons/download-button'
 import { useDrive } from '@/context/drive-context'
 
 export function DetailPanel() {
-  const { detailOpen, detailName, detailMeta, chunkList, selectedEntry } = useDrive()
+  const { detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
   if (!detailOpen) return null
 
   return (
@@ -17,6 +17,12 @@ export function DetailPanel() {
         {chunkList}
       </div>
       <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => previewSelected().catch((err) => showToast(err.message))}
+          className="rounded-xl border border-leaf bg-leaf/10 px-4 py-2 font-mono text-xs text-leaf hover:bg-leaf/20 transition-all"
+        >
+          👁 View File
+        </button>
         <DownloadButton />
         {selectedEntry?.source === 'vault' ? <DeleteButton /> : null}
       </div>

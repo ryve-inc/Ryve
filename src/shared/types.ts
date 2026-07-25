@@ -56,14 +56,14 @@ export type BridgeApi = {
   onWorkerExit: (specifier: string, listener: (code: number) => void) => () => void
   writeWorkerIPC: (specifier: string, data: string | Uint8Array) => Promise<unknown>
   getPathForFile: (file: File) => string
-  writeClipboard: (text: string) => void
+  writeClipboard: (text: string) => Promise<void>
   chooseDownloadPath: (defaultName?: string) => Promise<string | null>
   chooseUploadFiles: () => Promise<string[]>
 }
 
 declare global {
   interface Window {
-    bridge: BridgeApi
+    bridge?: BridgeApi
   }
 
   // Bare globals available inside the pear-runtime worker

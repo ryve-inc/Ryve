@@ -8,7 +8,7 @@ import FramedStream from 'framed-stream'
 import whichRuntime from 'which-runtime'
 import paparam from 'paparam'
 
-const { app, BrowserWindow, ipcMain, dialog } = electron
+const { app, BrowserWindow, ipcMain, dialog, clipboard } = electron
 const { isMac, isLinux, isWindows } = whichRuntime
 const { command, flag } = paparam
 
@@ -155,6 +155,10 @@ ipcMain.handle('dialog:openFile', async (evt) => {
     : await dialog.showOpenDialog(options)
   if (result.canceled || !result.filePaths) return []
   return result.filePaths
+})
+
+ipcMain.handle('clipboard:write', (_evt, text: string) => {
+  clipboard.writeText(text)
 })
 
 async function createWindow() {

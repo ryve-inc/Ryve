@@ -283,9 +283,26 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const closeInviteModal = useCallback(() => setInviteModal(closedInvite), [])
 
   const copyClipboard = useCallback(
-    (text: string) => {
+    async (text: string) => {
       try {
-        getBridge().writeClipboard(text)
+        const bridge = window.bridge
+        if (bridge && typeof bridge.writeClipboard === 'function') {
+          await bridge.writeClipboard(text)
+          showToast('Copied')
+          return
+        }
+      } catch {
+        // bridge failed, fall through to execCommand
+      }
+      try {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
+        document.body.appendChild(textarea)
+        textarea.focus()
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
         showToast('Copied')
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'Copy failed')

@@ -1,7 +1,7 @@
 import electron from 'electron'
 import type { BridgeApi } from '../shared/types.ts'
 
-const { contextBridge, ipcRenderer, webUtils, clipboard } = electron
+const { contextBridge, ipcRenderer, webUtils } = electron
 
 function toBuffer(data: unknown) {
   if (data === null || data === undefined || typeof data === 'number') return data as never
@@ -36,7 +36,7 @@ const bridge: BridgeApi = {
   writeWorkerIPC: (specifier, data) =>
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
   getPathForFile: (file) => webUtils.getPathForFile(file),
-  writeClipboard: (text) => clipboard.writeText(String(text)),
+  writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', String(text)),
   chooseDownloadPath: (defaultName) => ipcRenderer.invoke('dialog:savePath', defaultName),
   chooseUploadFiles: () => ipcRenderer.invoke('dialog:openFile')
 }

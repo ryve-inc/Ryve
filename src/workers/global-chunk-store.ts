@@ -4,6 +4,8 @@ import fs from 'bare-fs'
 import b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
 
+import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from './erasure-coding'
+
 const CHUNK_POOL_TOPIC = 'p2cloud:chunk-pool-v2'
 
 class GlobalChunkStore {
@@ -115,48 +117,49 @@ class GlobalChunkStore {
   }
 
   /**
-   * Dynamic K-Replication (K=2 target) chunk offloading with 5ms async yields for zero UI lag.
+   * Erasure Coding chunk offloading using allocateChunksToPeers diversity placement algorithm.
    */
-  async offloadChunks(chunkList) {
-    const peers = Array.from(this.swarm.connections)
-    if (peers.length === 0) {
-      console.log('[ChunkStore:Uploader] No online peers connected to offload chunks to.')
-      return false
+  async offloadChunks(chunkList, K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
+    // Save all chunks to local peer cache first for self-hosting / local fallback
+    for (const chunk of chunkList) {
+      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+      fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
     }
 
-    const targetK = Math.min(2, peers.length)
-    let successCount = 0
+    const peers = Array.from(this.swarm.connections)
+    const allocation = allocateChunksToPeers(chunkList, peers, K, M)
 
-    for (let i = 0; i < chunkList.length; i++) {
-      const chunk = chunkList[i]
-      const linePayload = JSON.stringify({
-        type: 'store-chunk',
-        hash: chunk.hash,
-        data: b4a.toString(chunk.buffer, 'hex')
-      }) + '\n'
-
-      // Select targetK distinct peers for this chunk using round-robin rotation
-      const targetPeers = []
-      for (let k = 0; k < targetK; k++) {
-        const peerIndex = (i + k) % peers.length
-        targetPeers.push(peers[peerIndex])
+    if (allocation.warnings.length > 0) {
+      for (const warn of allocation.warnings) {
+        console.warn(`[ChunkStore:Uploader] ${warn}`)
       }
+    }
 
-      // Send payload to the K selected target peers
-      for (const conn of targetPeers) {
+    if (peers.length === 0) {
+      console.log('[ChunkStore:Uploader] No online peers connected. Cached chunks locally.')
+      return allocation
+    }
+
+    // Send allocated chunks to respective peers over connection sockets
+    for (const [conn, peerChunks] of allocation.distribution.entries()) {
+      for (const chunk of peerChunks) {
+        const linePayload =
+          JSON.stringify({
+            type: 'store-chunk',
+            hash: chunk.hash,
+            data: b4a.toString(chunk.buffer, 'hex')
+          }) + '\n'
         try {
           conn.write(linePayload)
         } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 2))
       }
-
-      successCount++
-
-      // Tiny 5ms async yield per chunk to keep UI at 60 FPS smooth with 0 lag
-      await new Promise((resolve) => setTimeout(resolve, 5))
     }
 
-    console.log(`[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} online peers (K=${targetK} replication)!`)
-    return successCount === chunkList.length
+    console.log(
+      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} peers (Status: ${allocation.faultTolerance}, Max/Peer: ${allocation.maxChunksPerPeer})`
+    )
+    return allocation
   }
 
   /**

@@ -1,8 +1,11 @@
+export type FaultToleranceStatus = 'full' | 'degraded' | 'critical' | 'none'
+
 export type ChunkInfo = {
   index: number
   offset: number
   length: number
   hash: string
+  isParity?: boolean
 }
 
 export type ChunkManifest = {
@@ -17,6 +20,13 @@ export type ChunkManifest = {
   }
   chunks: ChunkInfo[]
   metadata: Record<string, unknown> | null
+  erasureCoding?: {
+    k: number
+    m: number
+    chunkSize: number
+    paddedSize: number
+    faultTolerance: FaultToleranceStatus
+  }
 }
 
 export type DriveEntry = {

@@ -39,6 +39,7 @@ function hashChunk(buf) {
 }
 
 import sodium from 'sodium-universal'
+import { encodeBuffer, decodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from './erasure-coding'
 
 function encryptBuffer(buf, key) {
   const nonce = b4a.alloc(sodium.crypto_secretbox_NONCEBYTES)
@@ -133,31 +134,36 @@ class VaultDrive {
   async upload(localPath, destPath, mime = null) {
     const dest = normalizePath(destPath)
     const rawBuffer = await fs.promises.readFile(localPath)
-    
+
     // 1. Encrypt raw file buffer locally with master encryption key
     const { encrypted, nonce } = encryptBuffer(rawBuffer, this.encryptionKey)
 
-    // 2. Break encrypted file into 64KB content-addressed chunks
-    const CHUNK_SIZE = 64 * 1024
+    // 2. Perform Reed-Solomon Erasure Coding (K=4 data shards, M=2 parity shards)
+    const ecResult = await encodeBuffer(encrypted, DEFAULT_EC_K, DEFAULT_EC_M)
     const chunks = []
     const chunkMetadata = []
 
-    let index = 0
-    for (let offset = 0; offset < encrypted.byteLength; offset += CHUNK_SIZE) {
-      const chunkBuf = encrypted.subarray(offset, Math.min(encrypted.byteLength, offset + CHUNK_SIZE))
-      const hash = hashChunk(chunkBuf)
-      chunks.push({ hash, buffer: chunkBuf })
+    for (const shard of ecResult.shards) {
+      const hash = hashChunk(shard.buffer)
+      chunks.push({
+        index: shard.index,
+        isParity: shard.isParity,
+        buffer: shard.buffer,
+        hash
+      })
       chunkMetadata.push({
-        index: index++,
-        offset,
-        length: chunkBuf.byteLength,
+        index: shard.index,
+        isParity: shard.isParity,
+        offset: shard.index * ecResult.chunkSize,
+        length: shard.buffer.byteLength,
         hash
       })
     }
 
-    // 3. Offload encrypted chunks to network peers in global chunk store
+    // 3. Offload chunks to network peers in global chunk store
+    let allocation = null
     if (this.chunkStore) {
-      await this.chunkStore.offloadChunks(chunks)
+      allocation = await this.chunkStore.offloadChunks(chunks, DEFAULT_EC_K, DEFAULT_EC_M)
     }
 
     // 4. Save metadata index in drive (tiny record)
@@ -166,7 +172,15 @@ class VaultDrive {
       uploadedAt: Date.now(),
       sourceName: path.basename(localPath),
       originalSize: rawBuffer.byteLength,
+      encryptedSize: encrypted.byteLength,
       nonce,
+      erasureCoding: {
+        k: ecResult.k,
+        m: ecResult.m,
+        chunkSize: ecResult.chunkSize,
+        paddedSize: ecResult.paddedSize,
+        faultTolerance: allocation ? allocation.faultTolerance : 'none'
+      },
       chunks: chunkMetadata
     }
 
@@ -183,7 +197,9 @@ class VaultDrive {
       }
     }
 
-    console.log(`[Uploader:Pruner] ✓ SUCCESS: Offloaded ${chunks.length} encrypted chunks for ${dest}. Local file data cleared!`)
+    console.log(
+      `[Uploader:Pruner] ✓ SUCCESS: Offloaded ${chunks.length} erasure-coded chunks for ${dest} (FaultTolerance: ${meta.erasureCoding.faultTolerance}). Local file data cleared!`
+    )
 
     return {
       path: dest,
@@ -204,36 +220,63 @@ class VaultDrive {
       throw new Error('File metadata has no chunk manifest: ' + p)
     }
 
-    console.log(`[User:Download] Reassembling ${meta.chunks.length} encrypted chunks for ${p}...`)
+    console.log(`[User:Download] Reassembling chunks for ${p}...`)
 
-    const encryptedChunks = []
+    let encryptedBuffer
 
-    // Fetch each encrypted chunk from online peers or local cache
-    for (const chunkMeta of meta.chunks) {
-      if (!this.chunkStore) {
-        throw new Error('Global chunk store unavailable.')
+    if (meta.erasureCoding) {
+      // Erasure Coding download path: parallel query across online peers
+      const { k, m, chunkSize } = meta.erasureCoding
+      const totalShards = k + m
+      const availableShardsMap = new Map()
+
+      // Launch parallel fetch requests for all N chunks
+      const fetchPromises = meta.chunks.map(async (chunkMeta) => {
+        if (!this.chunkStore) return null
+        try {
+          const chunkBuf = await this.chunkStore.fetchChunk(chunkMeta.hash, 15000)
+          const actualHash = hashChunk(chunkBuf)
+          if (actualHash === chunkMeta.hash) {
+            availableShardsMap.set(chunkMeta.index, chunkBuf)
+          }
+        } catch {}
+      })
+
+      // Wait for fetch promises or check if we reached K valid chunks
+      await Promise.allSettled(fetchPromises)
+
+      if (availableShardsMap.size < k) {
+        throw new Error(
+          `File unavailable: Received ${availableShardsMap.size} chunks out of ${totalShards}. Need at least K=${k} active peers.`
+        )
       }
-      try {
-        const chunkBuf = await this.chunkStore.fetchChunk(chunkMeta.hash, 15000)
-        
-        // Verify BLAKE2b hash
-        const actualHash = hashChunk(chunkBuf)
-        if (actualHash !== chunkMeta.hash) {
-          throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
+
+      const encryptedSize = meta.encryptedSize || meta.originalSize
+      encryptedBuffer = await decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
+    } else {
+      // Legacy download path for backward compatibility
+      const encryptedChunks = []
+      for (const chunkMeta of meta.chunks) {
+        if (!this.chunkStore) {
+          throw new Error('Global chunk store unavailable.')
         }
-        
-        encryptedChunks.push(chunkBuf)
-      } catch (err) {
-        console.error(`[User:Download] Failed to fetch chunk ${chunkMeta.hash.slice(0, 12)}:`, err?.message || err)
-        throw new Error(`File unavailable: Peer hosting chunk ${chunkMeta.hash.slice(0, 12)} is offline.`)
+        try {
+          const chunkBuf = await this.chunkStore.fetchChunk(chunkMeta.hash, 15000)
+          const actualHash = hashChunk(chunkBuf)
+          if (actualHash !== chunkMeta.hash) {
+            throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
+          }
+          encryptedChunks.push(chunkBuf)
+        } catch (err) {
+          console.error(`[User:Download] Failed to fetch chunk ${chunkMeta.hash.slice(0, 12)}:`, err?.message || err)
+          throw new Error(`File unavailable: Peer hosting chunk ${chunkMeta.hash.slice(0, 12)} is offline.`)
+        }
       }
+      encryptedBuffer = b4a.concat(encryptedChunks)
     }
 
-    // Concatenate all encrypted chunks
-    const concatenatedEncrypted = b4a.concat(encryptedChunks)
-
     // Decrypt full buffer using master encryption key and saved nonce
-    const decryptedBuffer = decryptBuffer(concatenatedEncrypted, this.encryptionKey, meta.nonce)
+    const decryptedBuffer = decryptBuffer(encryptedBuffer, this.encryptionKey, meta.nonce)
 
     // Write uncorrupted, decrypted file to destination path
     await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })

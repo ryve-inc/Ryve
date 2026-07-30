@@ -2,7 +2,7 @@ import * as esbuild from 'esbuild'
 import { build as viteBuild } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,6 +12,11 @@ const dist = path.join(root, 'dist')
 rmSync(dist, { recursive: true, force: true })
 mkdirSync(path.join(dist, 'workers'), { recursive: true })
 mkdirSync(path.join(dist, 'electron'), { recursive: true })
+
+copyFileSync(
+  path.join(root, 'node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
+  path.join(dist, 'workers/reed_solomon_erasure_bg.wasm')
+)
 
 // Electron main — ESM
 await esbuild.build({

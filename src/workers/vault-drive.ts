@@ -139,7 +139,7 @@ class VaultDrive {
     const { encrypted, nonce } = encryptBuffer(rawBuffer, this.encryptionKey)
 
     // 2. Perform Reed-Solomon Erasure Coding (K=4 data shards, M=2 parity shards)
-    const ecResult = await encodeBuffer(encrypted, DEFAULT_EC_K, DEFAULT_EC_M)
+    const ecResult = encodeBuffer(encrypted, DEFAULT_EC_K, DEFAULT_EC_M)
     const chunks = []
     const chunkMetadata = []
 
@@ -252,7 +252,7 @@ class VaultDrive {
       }
 
       const encryptedSize = meta.encryptedSize || meta.originalSize
-      encryptedBuffer = await decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
+      encryptedBuffer = decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
     } else {
       // Legacy download path for backward compatibility
       const encryptedChunks = []

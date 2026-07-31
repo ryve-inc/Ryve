@@ -6,53 +6,53 @@ export const DEFAULT_EC_K = 4
 export const DEFAULT_EC_M = 2
 
 let rsInstance: ReedSolomonErasure | null = null
-let rsInitPromise: Promise<ReedSolomonErasure> | null = null
 
-export async function getRSInstance(): Promise<ReedSolomonErasure> {
-  if (rsInstance) return rsInstance
-  if (!rsInitPromise) {
-    rsInitPromise = (async () => {
-      let fs: any
-      let path: any
+export function getRSInstance(): ReedSolomonErasure {
+  if (!rsInstance) {
+    let fs: any
+    let path: any
 
-      if (typeof Bare !== 'undefined') {
-        fs = (0, eval)('require')('bare-fs')
-        path = (0, eval)('require')('bare-path')
+    if (typeof Bare !== 'undefined') {
+      fs = require('bare-fs')
+      path = require('bare-path')
+    } else {
+      const getBuiltin = (process as any).getBuiltinModule?.bind(process)
+      if (getBuiltin) {
+        fs = getBuiltin('fs')
+        path = getBuiltin('path')
       } else {
-        const nodeFs = await import('node:fs')
-        const nodePath = await import('node:path')
-        fs = nodeFs.default || nodeFs
-        path = nodePath.default || nodePath
+        const mainReq = (process as any).mainModule?.require?.bind((process as any).mainModule)
+        fs = mainReq ? mainReq('fs') : null
+        path = mainReq ? mainReq('path') : null
       }
+    }
 
-      if (!fs || !path) {
-        throw new Error('[ErasureCoding] Could not initialize filesystem module.')
-      }
+    if (!fs || !path) {
+      throw new Error('[ErasureCoding] Could not initialize filesystem module.')
+    }
 
-      const candidatePaths = [
-        path.resolve('dist/workers/reed_solomon_erasure_bg.wasm'),
-        path.resolve('node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
-        './dist/workers/reed_solomon_erasure_bg.wasm',
-        './node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'
-      ]
+    const candidatePaths = [
+      path.resolve('dist/workers/reed_solomon_erasure_bg.wasm'),
+      path.resolve('node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
+      './dist/workers/reed_solomon_erasure_bg.wasm',
+      './node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'
+    ]
 
-      let wasmBytes: Uint8Array | null = null
-      for (const p of candidatePaths) {
-        try {
-          wasmBytes = fs.readFileSync(p)
-          if (wasmBytes && wasmBytes.byteLength > 0) break
-        } catch {}
-      }
+    let wasmBytes: Uint8Array | null = null
+    for (const p of candidatePaths) {
+      try {
+        wasmBytes = fs.readFileSync(p)
+        if (wasmBytes && wasmBytes.byteLength > 0) break
+      } catch {}
+    }
 
-      if (!wasmBytes) {
-        throw new Error('[ErasureCoding] Failed to locate reed_solomon_erasure_bg.wasm binary.')
-      }
+    if (!wasmBytes) {
+      throw new Error('[ErasureCoding] Failed to locate reed_solomon_erasure_bg.wasm binary.')
+    }
 
-      rsInstance = ReedSolomonErasure.fromBytes(wasmBytes)
-      return rsInstance
-    })()
+    rsInstance = ReedSolomonErasure.fromBytes(wasmBytes)
   }
-  return rsInitPromise
+  return rsInstance
 }
 
 export type FaultToleranceStatus = 'full' | 'degraded' | 'critical' | 'none'
@@ -150,18 +150,18 @@ export function allocateChunksToPeers(
 /**
  * Encodes a buffer into K data shards + M parity shards using Reed-Solomon coding.
  */
-export async function encodeBuffer(
+export function encodeBuffer(
   dataBuffer: Uint8Array,
   k: number = DEFAULT_EC_K,
   m: number = DEFAULT_EC_M
-): Promise<{
+): {
   k: number
   m: number
   chunkSize: number
   paddedSize: number
   shards: Array<{ index: number; isParity: boolean; buffer: Uint8Array }>
-}> {
-  const rs = await getRSInstance()
+} {
+  const rs = getRSInstance()
   const rawSize = dataBuffer.byteLength
 
   // Shard size must be even integer (or multiple of 2) for RS WASM alignment
@@ -208,14 +208,14 @@ export async function encodeBuffer(
 /**
  * Reconstructs original data buffer from available shards (up to m missing shards allowed).
  */
-export async function decodeBuffer(
+export function decodeBuffer(
   availableShardsMap: Map<number, Uint8Array>,
   k: number = DEFAULT_EC_K,
   m: number = DEFAULT_EC_M,
   chunkSize: number,
   originalSize: number
-): Promise<Uint8Array> {
-  const rs = await getRSInstance()
+): Uint8Array {
+  const rs = getRSInstance()
   const totalShards = k + m
 
   // Check if all K data shards (0..k-1) are present for fast-path bypass

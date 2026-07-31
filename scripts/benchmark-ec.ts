@@ -1,6 +1,6 @@
 import { encodeBuffer, decodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from '../src/workers/erasure-coding.js'
 
-async function runBenchmark(sizeMb: number) {
+function runBenchmark(sizeMb: number) {
   const sizeBytes = sizeMb * 1024 * 1024
   const randomBuffer = new Uint8Array(sizeBytes)
   for (let i = 0; i < sizeBytes; i++) {
@@ -9,7 +9,7 @@ async function runBenchmark(sizeMb: number) {
 
   // Measure Encode
   const startEncode = performance.now()
-  const encoded = await encodeBuffer(randomBuffer, DEFAULT_EC_K, DEFAULT_EC_M)
+  const encoded = encodeBuffer(randomBuffer, DEFAULT_EC_K, DEFAULT_EC_M)
   const encodeTimeMs = performance.now() - startEncode
 
   // Prepare shards map and simulate dropping M parity/data shards
@@ -23,7 +23,7 @@ async function runBenchmark(sizeMb: number) {
 
   // Measure Decode
   const startDecode = performance.now()
-  const reconstructed = await decodeBuffer(
+  const reconstructed = decodeBuffer(
     shardsMap,
     DEFAULT_EC_K,
     DEFAULT_EC_M,
@@ -60,7 +60,7 @@ async function runBenchmark(sizeMb: number) {
 }
 
 console.log('=== Starting Erasure Coding Performance Benchmarks ===\n')
-await runBenchmark(1)
-await runBenchmark(5)
-await runBenchmark(20)
+runBenchmark(1)
+runBenchmark(5)
+runBenchmark(20)
 console.log('=== Benchmark Complete ===')

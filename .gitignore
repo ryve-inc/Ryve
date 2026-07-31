@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+npm-debug.log
+yarn-error.log
 
 # Build output
 dist/
@@ -34,3 +36,27 @@ coverage/
 # Misc
 todo
 *.tsbuildinfo
+
+
+# Android build artefacts
+android/app/build/
+android/.gradle/
+android/build/
+android/.idea/
+android/.cxx/
+android/.externalNativeBuild/
+android/local.properties          # contains SDK path on your machine
+android/app/src/debug/
+android/app/src/main/jniLibs/   # generated native libs
+# Metro / bundler cache
+metro-cache/
+.cache/
+tmp/
+dist/
+# OS / editor artefacts
+.DS_Store
+*.log
+*.tmp
+*.swp
+.idea/
+.vscode/

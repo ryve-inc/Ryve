@@ -1,0 +1,41 @@
+{
+  "name": "drive-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start",
+    "build:worker": "bare-pack --target mobile src/workers/main.js -o android/app/src/main/assets/worker.bundle",
+    "bundle": "react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle",
+    "apk:debug": "cd android && ./gradlew assembleDebug",
+    "apk:release": "cd android && ./gradlew assembleRelease",
+    "adb:install": "adb install android/app/build/outputs/apk/debug/app-debug.apk"
+  },
+  "dependencies": {
+    "b4a": "^1.6.7",
+    "react": "19.0.0",
+    "react-native": "0.76.9",
+    "react-native-bare-kit": "^3.3.0",
+    "react-native-document-picker": "^9.3.1",
+    "react-native-fs": "^2.20.0",
+    "react-native-permissions": "^4.1.5",
+    "react-native-safe-area-context": "^4.14.1",
+    "react-native-screens": "^4.7.0",
+    "@react-navigation/native": "^7.1.6",
+    "@react-navigation/native-stack": "^7.3.10"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@babel/preset-typescript": "^7.25.0",
+    "@react-native/babel-preset": "0.76.9",
+    "@react-native/metro-config": "0.76.9",
+    "@types/react": "^19.0.0",
+    "@types/react-native": "^0.73.0",
+    "bare-pack": "^3.3.0",
+    "metro-config": "^0.82.0",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

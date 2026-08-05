@@ -289,12 +289,18 @@ class VaultDrive {
     const decryptedBuffer = decryptBuffer(encryptedBuffer, this.encryptionKey, meta.nonce)
 
     // Write uncorrupted, decrypted file to destination path
-    await fs.promises.mkdir(path.dirname(destLocalPath), { recursive: true })
-    await fs.promises.writeFile(destLocalPath, decryptedBuffer)
+    let finalDest = destLocalPath
+    const expectedExt = path.extname(meta.sourceName || p)
+    if (expectedExt && !path.extname(finalDest)) {
+      finalDest += expectedExt
+    }
+
+    await fs.promises.mkdir(path.dirname(finalDest), { recursive: true })
+    await fs.promises.writeFile(finalDest, decryptedBuffer)
 
     console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
 
-    return { path: p, destLocalPath, verified: true }
+    return { path: p, destLocalPath: finalDest, verified: true }
   }
 
   async delete(entryPath) {

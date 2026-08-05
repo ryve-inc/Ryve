@@ -133,15 +133,26 @@ function getWorker(specifier: string) {
 
 ipcMain.handle('dialog:savePath', async (evt, defaultName?: string) => {
   const win = BrowserWindow.fromWebContents(evt.sender)
+  const ext = defaultName && defaultName.includes('.') ? defaultName.split('.').pop() : null
   const options: Electron.SaveDialogOptions = {
     title: 'Download File',
-    defaultPath: defaultName || 'download'
+    defaultPath: defaultName || 'download',
+    filters: ext
+      ? [
+          { name: `${ext.toUpperCase()} File (*.${ext})`, extensions: [ext] },
+          { name: 'All Files (*.*)', extensions: ['*'] }
+        ]
+      : undefined
   }
   const result = win
     ? await dialog.showSaveDialog(win, options)
     : await dialog.showSaveDialog(options)
   if (result.canceled || !result.filePath) return null
-  return result.filePath
+  let filePath = result.filePath
+  if (ext && !path.extname(filePath)) {
+    filePath += '.' + ext
+  }
+  return filePath
 })
 
 ipcMain.handle('dialog:openFile', async (evt) => {

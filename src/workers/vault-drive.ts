@@ -230,6 +230,8 @@ class VaultDrive {
       const totalShards = k + m
       const availableShardsMap = new Map()
 
+      console.log(`[User:Download] Reassembling ${totalShards} shards (K=${k}, M=${m}) for ${p}...`)
+
       // Launch parallel fetch requests for all N chunks
       const fetchPromises = meta.chunks.map(async (chunkMeta) => {
         if (!this.chunkStore) return null
@@ -238,12 +240,20 @@ class VaultDrive {
           const actualHash = hashChunk(chunkBuf)
           if (actualHash === chunkMeta.hash) {
             availableShardsMap.set(chunkMeta.index, chunkBuf)
+          } else {
+            console.warn(`[User:Download] Hash mismatch for shard index ${chunkMeta.index}`)
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`[User:Download] Shard ${chunkMeta.index} (${chunkMeta.hash.slice(0, 12)}) fetch failed:`, err?.message || err)
+        }
       })
 
-      // Wait for fetch promises or check if we reached K valid chunks
+      // Wait for fetch promises
       await Promise.allSettled(fetchPromises)
+
+      console.log(
+        `[User:Download] Shards retrieved: ${availableShardsMap.size}/${totalShards} (Indices: ${Array.from(availableShardsMap.keys()).sort((a, b) => a - b).join(', ')})`
+      )
 
       if (availableShardsMap.size < k) {
         throw new Error(
@@ -251,7 +261,7 @@ class VaultDrive {
         )
       }
 
-      const encryptedSize = meta.encryptedSize || meta.originalSize
+      const encryptedSize = meta.encryptedSize || (meta.originalSize ? meta.originalSize + 16 : 0)
       encryptedBuffer = decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
     } else {
       // Legacy download path for backward compatibility

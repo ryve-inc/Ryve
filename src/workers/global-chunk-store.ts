@@ -3,6 +3,8 @@ import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
+import ProtomuxRPC from 'protomux-rpc'
+import c from 'compact-encoding'
 
 import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from './erasure-coding'
 
@@ -15,7 +17,6 @@ class GlobalChunkStore {
     this.cacheDir = path.join(storageDir, '.peer-cache')
     this.topic = hypercoreCrypto.hash(b4a.from(CHUNK_POOL_TOPIC))
     this.discovery = null
-    this.activeRequests = new Map()
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -37,82 +38,40 @@ class GlobalChunkStore {
   }
 
   _onConnection(conn) {
-    if (conn._chunkStoreHandled) return
-    conn._chunkStoreHandled = true
+    if (conn._chunkRpc) return
 
     console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${this.swarm.connections.size}`)
 
-    let lineBuffer = ''
+    const rpc = new ProtomuxRPC(conn, {
+      protocol: 'p2cloud-chunk-store-v1',
+      valueEncoding: c.json
+    })
+
+    conn._chunkRpc = rpc
+
+    rpc.respond('get-chunk', async (req) => {
+      if (!req || !req.hash) throw new Error('Invalid request')
+      const chunkPath = path.join(this.cacheDir, req.hash + '.bin')
+      try {
+        const buf = await fs.promises.readFile(chunkPath)
+        console.log(`[ChunkStore:Server] Serving chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes)`)
+        return { hash: req.hash, data: b4a.toString(buf, 'hex') }
+      } catch (err) {
+        throw new Error(`Chunk ${req.hash.slice(0, 12)} not found in local cache`)
+      }
+    })
+
+    rpc.respond('store-chunk', async (req) => {
+      if (!req || !req.hash || !req.data) throw new Error('Invalid store chunk payload')
+      const chunkPath = path.join(this.cacheDir, req.hash + '.bin')
+      const buf = b4a.from(req.data, 'hex')
+      await fs.promises.writeFile(chunkPath, buf)
+      console.log(`[ChunkStore:Cache] Stored chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes) from remote peer`)
+      return { ok: true, hash: req.hash }
+    })
 
     conn.on('close', () => {
       console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${this.swarm.connections.size}`)
-    })
-
-    // Robust line-delimited JSON stream parser
-    conn.on('data', async (data) => {
-      lineBuffer += data.toString('utf-8')
-      const lines = lineBuffer.split('\n')
-      lineBuffer = lines.pop() || '' // Keep partial trailing line in buffer
-
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const jsonStart = line.indexOf('{')
-          if (jsonStart === -1) continue
-          const jsonEnd = line.lastIndexOf('}')
-          if (jsonEnd === -1 || jsonEnd < jsonStart) continue
-
-          const cleanJson = line.slice(jsonStart, jsonEnd + 1)
-          const msg = JSON.parse(cleanJson)
-          if (!msg || typeof msg !== 'object') continue
-
-          // 1. Peer requesting a chunk by hash
-          if (msg.type === 'get-chunk' && msg.hash) {
-            const chunkPath = path.join(this.cacheDir, msg.hash + '.bin')
-            try {
-              const buf = await fs.promises.readFile(chunkPath)
-              conn.write(JSON.stringify({
-                type: 'chunk-data',
-                hash: msg.hash,
-                data: b4a.toString(buf, 'hex')
-              }) + '\n')
-              console.log(`[ChunkStore:Server] Served chunk ${msg.hash.slice(0, 12)} (${buf.byteLength} bytes) to peer`)
-            } catch {
-              conn.write(JSON.stringify({ type: 'chunk-not-found', hash: msg.hash }) + '\n')
-            }
-          }
-
-          // 2. Peer sending an encrypted chunk to store in our .peer-cache
-          else if (msg.type === 'store-chunk' && msg.hash && msg.data) {
-            const chunkPath = path.join(this.cacheDir, msg.hash + '.bin')
-            const buf = b4a.from(msg.data, 'hex')
-            // Asynchronously write chunk to .peer-cache
-            fs.promises.writeFile(chunkPath, buf).catch(() => {})
-            conn.write(JSON.stringify({ type: 'store-ack', hash: msg.hash }) + '\n')
-            console.log(`[ChunkStore:Cache] Cached chunk ${msg.hash.slice(0, 12)} (${buf.byteLength} bytes)`)
-          }
-
-          // 3. Responses for pending fetch requests
-          else if (msg.type === 'chunk-data' && msg.hash && msg.data) {
-            const pending = this.activeRequests.get(msg.hash)
-            if (pending) {
-              this.activeRequests.delete(msg.hash)
-              pending.resolve(b4a.from(msg.data, 'hex'))
-            }
-          }
-
-          else if (msg.type === 'chunk-not-found' && msg.hash) {
-            const pending = this.activeRequests.get(msg.hash)
-            if (pending) {
-              pending.notFoundCount = (pending.notFoundCount || 0) + 1
-              if (pending.notFoundCount >= this.swarm.connections.size) {
-                this.activeRequests.delete(msg.hash)
-                pending.reject(new Error(`Chunk ${msg.hash.slice(0, 12)} not found on online peers.`))
-              }
-            }
-          }
-        } catch {}
-      }
     })
   }
 
@@ -140,19 +99,19 @@ class GlobalChunkStore {
       return allocation
     }
 
-    // Send allocated chunks to respective peers over connection sockets
+    // Send allocated chunks to respective peers over connection sockets via RPC
     for (const [conn, peerChunks] of allocation.distribution.entries()) {
+      const rpc = conn._chunkRpc
+      if (!rpc || rpc.closed) continue
       for (const chunk of peerChunks) {
-        const linePayload =
-          JSON.stringify({
-            type: 'store-chunk',
+        try {
+          await rpc.request('store-chunk', {
             hash: chunk.hash,
             data: b4a.toString(chunk.buffer, 'hex')
-          }) + '\n'
-        try {
-          conn.write(linePayload)
-        } catch {}
-        await new Promise((resolve) => setTimeout(resolve, 2))
+          })
+        } catch (err) {
+          console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
+        }
       }
     }
 
@@ -163,7 +122,7 @@ class GlobalChunkStore {
   }
 
   /**
-   * Fetches an encrypted chunk using line-delimited JSON querying.
+   * Fetches an encrypted chunk using ProtomuxRPC querying.
    */
   async fetchChunk(hash, timeoutMs = 15000) {
     // 1. Check local .peer-cache first
@@ -173,35 +132,34 @@ class GlobalChunkStore {
       return localBuf
     } catch {}
 
-    // 2. Query online network peers over Hyperswarm
-    if (this.swarm.connections.size === 0) {
+    // 2. Query online network peers over Protomux RPC
+    const connections = Array.from(this.swarm.connections).filter((conn) => conn._chunkRpc && !conn._chunkRpc.closed)
+
+    if (connections.length === 0) {
       throw new Error(`Chunk ${hash.slice(0, 12)} unavailable: No online peers connected.`)
     }
 
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.activeRequests.delete(hash)
-        reject(new Error(`Chunk ${hash.slice(0, 12)} fetch timed out. Peer hosting chunk is offline.`))
-      }, timeoutMs)
-
-      this.activeRequests.set(hash, {
-        resolve: (buf) => {
-          clearTimeout(timer)
-          resolve(buf)
-        },
-        reject: (err) => {
-          clearTimeout(timer)
-          reject(err)
+    const requests = connections.map(async (conn) => {
+      const rpc = conn._chunkRpc
+      if (!rpc || rpc.closed) throw new Error('RPC closed')
+      const res = await rpc.request('get-chunk', { hash }, { timeout: timeoutMs })
+      if (res && res.data) {
+        const buf = b4a.from(res.data, 'hex')
+        const actualHash = b4a.toString(hypercoreCrypto.hash(buf), 'hex')
+        if (actualHash === hash) {
+          // Cache locally for faster future lookups
+          fs.promises.writeFile(localChunkPath, buf).catch(() => {})
+          return buf
         }
-      })
-
-      const reqPayload = JSON.stringify({ type: 'get-chunk', hash }) + '\n'
-      for (const conn of this.swarm.connections) {
-        try {
-          conn.write(reqPayload)
-        } catch {}
       }
+      throw new Error('Hash mismatch or invalid data')
     })
+
+    try {
+      return await Promise.any(requests)
+    } catch (err) {
+      throw new Error(`Chunk ${hash.slice(0, 12)} fetch failed: Not found or timed out across all connected peers.`)
+    }
   }
 
   async close() {
@@ -210,8 +168,8 @@ class GlobalChunkStore {
       await this.discovery.destroy().catch(() => {})
       this.discovery = null
     }
-    this.activeRequests.clear()
   }
 }
 
 export { GlobalChunkStore }
+

@@ -3,15 +3,21 @@ import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
-import ProtomuxRPC from 'protomux-rpc'
-import c from 'compact-encoding'
 
-import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from './erasure-coding'
+import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-coding'
+import { setupConnectionRpc } from './rpc-handler'
+import type { GlobalChunkStoreOptions } from './types'
 
 const CHUNK_POOL_TOPIC = 'p2cloud:chunk-pool-v2'
 
 class GlobalChunkStore {
-  constructor({ swarm, storageDir }) {
+  swarm: any
+  storageDir: string
+  cacheDir: string
+  topic: Uint8Array
+  discovery: any
+
+  constructor({ swarm, storageDir }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
@@ -37,48 +43,14 @@ class GlobalChunkStore {
     console.log('[ChunkStore] Joined global chunk network pool on topic:', CHUNK_POOL_TOPIC)
   }
 
-  _onConnection(conn) {
-    if (conn._chunkRpc) return
-
-    console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${this.swarm.connections.size}`)
-
-    const rpc = new ProtomuxRPC(conn, {
-      protocol: 'p2cloud-chunk-store-v1',
-      valueEncoding: c.json
-    })
-
-    conn._chunkRpc = rpc
-
-    rpc.respond('get-chunk', async (req) => {
-      if (!req || !req.hash) throw new Error('Invalid request')
-      const chunkPath = path.join(this.cacheDir, req.hash + '.bin')
-      try {
-        const buf = await fs.promises.readFile(chunkPath)
-        console.log(`[ChunkStore:Server] Serving chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes)`)
-        return { hash: req.hash, data: b4a.toString(buf, 'hex') }
-      } catch (err) {
-        throw new Error(`Chunk ${req.hash.slice(0, 12)} not found in local cache`)
-      }
-    })
-
-    rpc.respond('store-chunk', async (req) => {
-      if (!req || !req.hash || !req.data) throw new Error('Invalid store chunk payload')
-      const chunkPath = path.join(this.cacheDir, req.hash + '.bin')
-      const buf = b4a.from(req.data, 'hex')
-      await fs.promises.writeFile(chunkPath, buf)
-      console.log(`[ChunkStore:Cache] Stored chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes) from remote peer`)
-      return { ok: true, hash: req.hash }
-    })
-
-    conn.on('close', () => {
-      console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${this.swarm.connections.size}`)
-    })
+  _onConnection(conn: any) {
+    setupConnectionRpc(conn, this.swarm, this.cacheDir)
   }
 
   /**
    * Erasure Coding chunk offloading using allocateChunksToPeers diversity placement algorithm.
    */
-  async offloadChunks(chunkList, K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
+  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
     // Save all chunks to local peer cache first for self-hosting / local fallback
     for (const chunk of chunkList) {
       const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
@@ -99,11 +71,11 @@ class GlobalChunkStore {
       return allocation
     }
 
-    const offloadedHashes = new Set()
+    const offloadedHashes = new Set<string>()
 
     // Send allocated chunks to respective peers over connection sockets via RPC
     for (const [conn, peerChunks] of allocation.distribution.entries()) {
-      const rpc = conn._chunkRpc
+      const rpc = (conn as any)._chunkRpc
       if (!rpc || rpc.closed) continue
       for (const chunk of peerChunks) {
         try {
@@ -112,7 +84,7 @@ class GlobalChunkStore {
             data: b4a.toString(chunk.buffer, 'hex')
           })
           offloadedHashes.add(chunk.hash)
-        } catch (err) {
+        } catch (err: any) {
           console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
         }
       }
@@ -133,7 +105,7 @@ class GlobalChunkStore {
   /**
    * Purges specified chunk hashes from local storage.
    */
-  async purgeChunks(hashes) {
+  async purgeChunks(hashes: string[]) {
     for (const hash of hashes) {
       if (!hash) continue
       const localPath = path.join(this.cacheDir, hash + '.bin')
@@ -144,7 +116,7 @@ class GlobalChunkStore {
   /**
    * Fetches an encrypted chunk using ProtomuxRPC querying.
    */
-  async fetchChunk(hash, timeoutMs = 15000) {
+  async fetchChunk(hash: string, timeoutMs = 15000) {
     // 1. Check local .peer-cache first
     const localChunkPath = path.join(this.cacheDir, hash + '.bin')
     try {
@@ -153,13 +125,13 @@ class GlobalChunkStore {
     } catch {}
 
     // 2. Query online network peers over Protomux RPC
-    const connections = Array.from(this.swarm.connections).filter((conn) => conn._chunkRpc && !conn._chunkRpc.closed)
+    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
 
     if (connections.length === 0) {
       throw new Error(`Chunk ${hash.slice(0, 12)} unavailable: No online peers connected.`)
     }
 
-    const requests = connections.map(async (conn) => {
+    const requests = connections.map(async (conn: any) => {
       const rpc = conn._chunkRpc
       if (!rpc || rpc.closed) throw new Error('RPC closed')
       const res = await rpc.request('get-chunk', { hash }, { timeout: timeoutMs })
@@ -189,5 +161,4 @@ class GlobalChunkStore {
   }
 }
 
-export { GlobalChunkStore }
-
+export { GlobalChunkStore, CHUNK_POOL_TOPIC }

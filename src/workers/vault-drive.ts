@@ -298,6 +298,11 @@ class VaultDrive {
     await fs.promises.mkdir(path.dirname(finalDest), { recursive: true })
     await fs.promises.writeFile(finalDest, decryptedBuffer)
 
+    // Purge temporary chunk cache from local disk to free space
+    if (this.chunkStore && meta.chunks) {
+      await this.chunkStore.purgeChunks(meta.chunks.map((c) => c.hash))
+    }
+
     console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
 
     return { path: p, destLocalPath: finalDest, verified: true }

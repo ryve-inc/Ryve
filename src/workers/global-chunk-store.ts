@@ -99,6 +99,8 @@ class GlobalChunkStore {
       return allocation
     }
 
+    const offloadedHashes = new Set()
+
     // Send allocated chunks to respective peers over connection sockets via RPC
     for (const [conn, peerChunks] of allocation.distribution.entries()) {
       const rpc = conn._chunkRpc
@@ -109,16 +111,34 @@ class GlobalChunkStore {
             hash: chunk.hash,
             data: b4a.toString(chunk.buffer, 'hex')
           })
+          offloadedHashes.add(chunk.hash)
         } catch (err) {
           console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
         }
       }
     }
 
+    // Delete successfully offloaded chunks from local storage to save space
+    for (const hash of offloadedHashes) {
+      const localPath = path.join(this.cacheDir, hash + '.bin')
+      await fs.promises.unlink(localPath).catch(() => {})
+    }
+
     console.log(
-      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} peers (Status: ${allocation.faultTolerance}, Max/Peer: ${allocation.maxChunksPerPeer})`
+      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} peers (Status: ${allocation.faultTolerance}). Purged ${offloadedHashes.size} local chunk file(s).`
     )
     return allocation
+  }
+
+  /**
+   * Purges specified chunk hashes from local storage.
+   */
+  async purgeChunks(hashes) {
+    for (const hash of hashes) {
+      if (!hash) continue
+      const localPath = path.join(this.cacheDir, hash + '.bin')
+      await fs.promises.unlink(localPath).catch(() => {})
+    }
   }
 
   /**
@@ -147,8 +167,6 @@ class GlobalChunkStore {
         const buf = b4a.from(res.data, 'hex')
         const actualHash = b4a.toString(hypercoreCrypto.hash(buf), 'hex')
         if (actualHash === hash) {
-          // Cache locally for faster future lookups
-          fs.promises.writeFile(localChunkPath, buf).catch(() => {})
           return buf
         }
       }

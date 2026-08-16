@@ -1,19 +1,18 @@
-// @ts-nocheck
 import b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
 
-function hexHash(buf) {
+function hexHash(buf: Uint8Array): string {
   return b4a.toString(hypercoreCrypto.hash(buf), 'hex')
 }
 
-async function buildChunkManifest(drive, entryPath) {
+async function buildChunkManifest(drive: any, entryPath: string) {
   const entry = await drive.entry(entryPath)
   if (!entry || !entry.value || !entry.value.blob) {
     throw new Error('File not found or has no content: ' + entryPath)
   }
 
   const blob = entry.value.blob
-  const chunks = []
+  const chunks: Array<{ index: number; offset: number; length: number; hash: string }> = []
   let offset = 0
 
   await drive.ready()
@@ -79,3 +78,4 @@ async function buildChunkManifest(drive, entryPath) {
 }
 
 export { buildChunkManifest }
+

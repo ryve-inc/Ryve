@@ -1,13 +1,12 @@
 import { NewFolderButton } from '@/components/buttons/new-folder-button'
-import { ShareButton } from '@/components/buttons/share-button'
 import { UploadButton } from '@/components/buttons/upload-button'
 import { AppSidebar } from '@/components/app-sidebar'
 import { DetailPanel } from '@/components/detail-panel'
 import { FilesPage } from '@/pages/files-page'
 import { SettingsPage } from '@/pages/settings-page'
-import { SharedPage } from '@/pages/shared-page'
 import { cn } from '@/lib/utils'
 import { useDrive } from '@/context/drive-context'
+import { Share2 } from 'lucide-react'
 
 export function AppShell() {
   const {
@@ -16,12 +15,10 @@ export function AppShell() {
     dragging,
     setDragging,
     uploadFiles,
-    activeShareId,
-    showToast
+    openNetworkInfoModal
   } = useDrive()
 
-  const breadcrumb =
-    currentNav === 'files' ? currentDir : currentNav === 'shared' ? 'Shared' : 'Settings'
+  const breadcrumb = currentNav === 'files' ? currentDir : 'Settings'
 
   return (
     <section className="grid h-full grid-cols-[220px_1fr_auto]">
@@ -31,10 +28,16 @@ export function AppShell() {
         <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-line bg-soil/80 px-5 py-3.5 backdrop-blur-xl">
           <div className="font-mono text-sm text-mute">{breadcrumb}</div>
           {currentNav === 'files' ? (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <NewFolderButton />
               <UploadButton />
-              <ShareButton />
+              <button
+                onClick={openNetworkInfoModal}
+                className="flex items-center gap-1.5 rounded-xl border border-leaf/40 bg-fern/30 px-3.5 py-2 text-xs font-semibold text-leaf hover:bg-fern/60 transition-colors"
+              >
+                <Share2 className="h-3.5 w-3.5" />
+                <span>Invite to Network</span>
+              </button>
             </div>
           ) : null}
         </header>
@@ -49,18 +52,12 @@ export function AppShell() {
           onDrop={(e) => {
             e.preventDefault()
             setDragging(false)
-            if (currentNav === 'shared' && activeShareId) {
-              uploadFiles(e.dataTransfer.files, { share: true }).catch((err) =>
-                showToast(err.message)
-              )
-            } else if (currentNav === 'files') {
-              uploadFiles(e.dataTransfer.files).catch((err) => showToast(err.message))
+            if (currentNav === 'files') {
+              uploadFiles(e.dataTransfer.files).catch((err) => console.error(err))
             }
           }}
         >
-          {currentNav === 'files' ? <FilesPage /> : null}
-          {currentNav === 'shared' ? <SharedPage /> : null}
-          {currentNav === 'settings' ? <SettingsPage /> : null}
+          {currentNav === 'files' ? <FilesPage /> : <SettingsPage />}
         </div>
       </main>
 
@@ -68,3 +65,4 @@ export function AppShell() {
     </section>
   )
 }
+

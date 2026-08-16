@@ -1,4 +1,3 @@
-// @ts-nocheck
 import b4a from 'b4a'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm'
 import { getRSInstance, DEFAULT_EC_K, DEFAULT_EC_M } from './rs-instance'
@@ -26,7 +25,7 @@ export function decodeBuffer(
   }
 
   if (allDataPresent) {
-    const dataParts = []
+    const dataParts: Uint8Array[] = []
     for (let i = 0; i < k; i++) {
       dataParts.push(availableShardsMap.get(i)!)
     }
@@ -73,3 +72,4 @@ export function decodeBuffer(
   const dataSubarray = fullMemory.subarray(0, chunkSize * k)
   return dataSubarray.subarray(0, originalSize)
 }
+

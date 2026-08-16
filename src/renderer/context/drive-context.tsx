@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { AppStatus, ChunkManifest, DriveEntry, ShareInfo } from '../../shared/types.ts'
+import type { AppStatus, ChunkManifest, DriveEntry } from '../../shared/types.ts'
+
 import { assertEntryName, formatBytes, joinPath, normalizeMnemonic } from '@/lib/format'
 import { decoder, getBridge, rpc, settlePending } from '@/lib/rpc'
 import {
@@ -58,20 +59,17 @@ type DriveContextValue = {
   currentNav: NavName
   currentDir: string
   entries: DriveEntry[]
-  shares: ShareInfo[]
-  activeShareId: string | null
-  shareDir: string
-  shareEntries: DriveEntry[]
-  activeShare: ShareInfo | null
   selectedEntry: SelectedEntry | null
   detailOpen: boolean
   detailName: string
   detailMeta: string
   chunkList: string
   toast: string | null
-  inviteModal: InviteModalState
   prompt: PromptState
   dragging: boolean
+  createNetworkModal: { open: boolean; inviteLink: string }
+  joinNetworkModal: { open: boolean }
+  networkInfoModal: { open: boolean }
   setDragging: (value: boolean) => void
   showToast: (msg: string) => void
   setAuthPanel: (panel: AuthPanel) => void
@@ -79,17 +77,12 @@ type DriveContextValue = {
   setAuthFlowActive: (value: boolean) => void
   navigate: (name: NavName) => void
   refreshFiles: () => Promise<void>
-  refreshShares: () => Promise<void>
-  refreshShareFiles: () => Promise<void>
-  openShare: (share: ShareInfo) => Promise<void>
-  closeShare: () => void
   setCurrentDir: (dir: string) => void
-  setShareDir: (dir: string) => void
   onEntryClick: (entry: DriveEntry) => Promise<void>
-  showDetail: (path: string, shareId?: string | null) => Promise<void>
+  showDetail: (path: string) => Promise<void>
   closeDetail: () => void
   uploadPaths: () => Promise<void>
-  uploadFiles: (fileList: FileList | File[], opts?: { share?: boolean }) => Promise<void>
+  uploadFiles: (fileList: FileList | File[]) => Promise<void>
   askDialog: (opts: {
     title: string
     body?: string
@@ -102,19 +95,23 @@ type DriveContextValue = {
   askText: (title: string, defaultValue?: string, body?: string) => Promise<string | null>
   askConfirm: (title: string, body?: string) => Promise<boolean>
   closePrompt: (value: string | boolean | null) => void
-  openInviteModal: (state: Omit<InviteModalState, 'open'>) => void
-  closeInviteModal: () => void
   resolveAuth: (unlocked: boolean, nextStatus?: AppStatus | null) => void
   showAuthHome: () => void
+  showApp: () => void
+  createNetwork: () => Promise<void>
+  joinNetwork: (link: string) => Promise<void>
+  openCreateNetworkModal: (inviteLink: string) => void
+  closeCreateNetworkModal: () => void
+  openJoinNetworkModal: () => void
+  closeJoinNetworkModal: () => void
+  openNetworkInfoModal: () => void
+  closeNetworkInfoModal: () => void
   createAccount: () => Promise<void>
   confirmCreateAccount: (typed: string) => Promise<void>
   unlock: (mnemonic: string) => Promise<void>
   logout: () => Promise<void>
   saveBlindPeers: (keysText: string) => Promise<void>
   mkdir: (name: string) => Promise<void>
-  createReadShare: () => Promise<void>
-  createCollabShare: (name: string) => Promise<void>
-  joinShare: (invite: string) => Promise<void>
   downloadSelected: () => Promise<void>
   previewSelected: () => Promise<void>
   previewModal: {
@@ -136,8 +133,14 @@ const emptyStatus: AppStatus = {
   driveKey: null,
   peers: 0,
   blindPeerKeys: [],
-  shares: []
+  network: {
+    networkLink: null,
+    networkKeyHex: null,
+    topicHex: null,
+    joined: false
+  }
 }
+
 
 const closedInvite: InviteModalState = {
   open: false,
@@ -169,10 +172,14 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const [currentNav, setCurrentNav] = useState<NavName>('files')
   const [currentDir, setCurrentDirState] = useState('/')
   const [entries, setEntries] = useState<DriveEntry[]>([])
-  const [shares, setShares] = useState<ShareInfo[]>([])
-  const [activeShareId, setActiveShareId] = useState<string | null>(null)
-  const [shareDir, setShareDirState] = useState('/')
-  const [shareEntries, setShareEntries] = useState<DriveEntry[]>([])
+  const [createNetworkModal, setCreateNetworkModal] = useState<{ open: boolean; inviteLink: string }>({
+    open: false,
+    inviteLink: ''
+  })
+  const [joinNetworkModal, setJoinNetworkModal] = useState<{ open: boolean }>({ open: false })
+  const [networkInfoModal, setNetworkInfoModal] = useState<{ open: boolean }>({ open: false })
+
+
   const [selectedEntry, setSelectedEntry] = useState<SelectedEntry | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailName, setDetailName] = useState('File')
@@ -190,9 +197,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const authResolvedRef = useRef(authResolved)
   const statusRef = useRef(status)
   const currentDirRef = useRef(currentDir)
-  const activeShareIdRef = useRef(activeShareId)
-  const shareDirRef = useRef(shareDir)
-  const sharesRef = useRef(shares)
   const askConfirmRef = useRef<(title: string, body?: string) => Promise<boolean>>(async () => false)
   const resolveAuthRef = useRef<(unlocked: boolean, nextStatus?: AppStatus | null) => void>(() => {})
   const showToastRef = useRef<(msg: string) => void>(() => {})
@@ -209,15 +213,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     currentDirRef.current = currentDir
   }, [currentDir])
-  useEffect(() => {
-    activeShareIdRef.current = activeShareId
-  }, [activeShareId])
-  useEffect(() => {
-    shareDirRef.current = shareDir
-  }, [shareDir])
-  useEffect(() => {
-    sharesRef.current = shares
-  }, [shares])
+
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
@@ -317,47 +313,14 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setEntries(list)
   }, [])
 
-  const refreshShareFiles = useCallback(async () => {
-    const id = activeShareIdRef.current
-    if (!id) return
-    const list = await rpc<DriveEntry[]>('listShareFiles', { id, dir: shareDirRef.current })
-    setShareEntries(list)
-  }, [])
-
-  const refreshShares = useCallback(async () => {
-    const list = await rpc<ShareInfo[]>('listShares')
-    setShares(list)
-    setStatus((s) => ({ ...s, shares: list }))
-    setActiveShareId(null)
-    setShareEntries([])
-  }, [])
-
-  const openShare = useCallback(
-    async (share: ShareInfo) => {
-      setActiveShareId(share.id)
-      setShareDirState(share.pathPrefix || '/')
-      shareDirRef.current = share.pathPrefix || '/'
-      activeShareIdRef.current = share.id
-      await refreshShareFiles()
-    },
-    [refreshShareFiles]
-  )
-
-  const closeShare = useCallback(() => {
-    setActiveShareId(null)
-    refreshShares().catch((err) => showToast(err.message))
-  }, [refreshShares, showToast])
-
   const showDetail = useCallback(
-    async (path: string, shareId: string | null = null) => {
+    async (path: string) => {
       const requestId = ++detailRequestId.current
       setDetailOpen(true)
       setDetailName(path.split('/').filter(Boolean).pop() || path)
       setChunkList('Loading…')
       try {
-        const manifest = shareId
-          ? await rpc<ChunkManifest>('getShareManifest', { id: shareId, path })
-          : await rpc<ChunkManifest>('getChunkManifest', { path })
+        const manifest = await rpc<ChunkManifest>('getChunkManifest', { path })
         if (requestId !== detailRequestId.current) return
         setDetailMeta(`${formatBytes(manifest.byteLength)} · ${manifest.chunks.length} chunks`)
         setChunkList(
@@ -367,8 +330,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         )
         setSelectedEntry({
           path,
-          source: shareId ? 'share' : 'vault',
-          shareId,
+          source: 'vault',
           manifest
         })
       } catch (err) {
@@ -379,6 +341,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     },
     []
   )
+
 
   const closeDetail = useCallback(() => {
     detailRequestId.current += 1
@@ -442,12 +405,11 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       setDetailOpen(false)
       if (name === 'files') {
         refreshFiles().catch((err) => showToast(err.message))
-      } else if (name === 'shared') {
-        refreshShares().catch((err) => showToast(err.message))
       }
     },
-    [refreshFiles, refreshShares, showToast]
+    [refreshFiles, showToast]
   )
+
 
   const showApp = useCallback(
     (nextStatus?: AppStatus | null) => {
@@ -466,7 +428,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       setAuthResolved(true)
       if (nextStatus) {
         setStatus(nextStatus)
-        if (nextStatus.shares) setShares(nextStatus.shares)
       }
       if (unlocked) {
         showApp(nextStatus)
@@ -477,6 +438,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     },
     [showApp]
   )
+
 
   const showAuthHome = useCallback(() => {
     setView('auth')
@@ -530,9 +492,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setView('auth')
     setAuthPanel('home')
     setEntries([])
-    setShares([])
     closeDetail()
   }, [closeDetail])
+
 
   const saveBlindPeers = useCallback(
     async (keysText: string) => {
@@ -555,42 +517,59 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [refreshFiles]
   )
 
-  const createReadShare = useCallback(async () => {
-    const res = await rpc<{ invite: string }>('createReadShare', {
-      pathPrefix: currentDirRef.current
-    })
-    openInviteModal({
-      title: 'Read-only share',
-      body:
-        `Invite for ${currentDirRef.current}. The app highlights this folder, but the invite currently ` +
-        `grants read access to the whole encrypted drive until subtree shares land. Treat it as sensitive.`,
-      invite: res.invite
-    })
-  }, [openInviteModal])
+  const openCreateNetworkModal = useCallback((inviteLink: string) => {
+    setCreateNetworkModal({ open: true, inviteLink })
+  }, [])
 
-  const createCollabShare = useCallback(
-    async (name: string) => {
-      const res = await rpc<{ invite: string }>('createCollabShare', {
-        name: assertEntryName(name || 'Shared folder')
-      })
-      openInviteModal({
-        title: 'Collaborative invite',
-        body: 'Anyone with this invite can read and write the shared folder.',
-        invite: res.invite
-      })
-      await refreshShares()
+  const closeCreateNetworkModal = useCallback(() => {
+    setCreateNetworkModal({ open: false, inviteLink: '' })
+  }, [])
+
+  const openJoinNetworkModal = useCallback(() => {
+    setJoinNetworkModal({ open: true })
+  }, [])
+
+  const closeJoinNetworkModal = useCallback(() => {
+    setJoinNetworkModal({ open: false })
+  }, [])
+
+  const openNetworkInfoModal = useCallback(() => {
+    setNetworkInfoModal({ open: true })
+  }, [])
+
+  const closeNetworkInfoModal = useCallback(() => {
+    setNetworkInfoModal({ open: false })
+  }, [])
+
+  const createNetwork = useCallback(async () => {
+    setAuthFlowActive(true)
+    try {
+      const res = await rpc<{ status: AppStatus; networkLink: string }>('createNetwork')
+      resolveAuth(true, res.status)
+      openCreateNetworkModal(res.networkLink)
+      showToast('P2P Network Created')
+    } catch (err: any) {
+      setAuthFlowActive(false)
+      showToast(err.message || 'Network creation failed')
+    }
+  }, [openCreateNetworkModal, resolveAuth, showToast])
+
+  const joinNetwork = useCallback(
+    async (link: string) => {
+      setAuthFlowActive(true)
+      try {
+        const res = await rpc<{ status: AppStatus }>('joinNetwork', { link })
+        resolveAuth(true, res.status)
+        showToast('Joined P2P Network!')
+      } catch (err: any) {
+        setAuthFlowActive(false)
+        showToast(err.message || 'Failed to join network')
+        throw err
+      }
     },
-    [openInviteModal, refreshShares]
+    [resolveAuth, showToast]
   )
 
-  const joinShare = useCallback(
-    async (invite: string) => {
-      await rpc('joinShare', { invite })
-      showToast('Joined share')
-      await refreshShares()
-    },
-    [refreshShares, showToast]
-  )
 
   const [previewModal, setPreviewModal] = useState<{
     open: boolean
@@ -804,10 +783,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const activeShare = useMemo(
-    () => shares.find((s) => s.id === activeShareId) || null,
-    [shares, activeShareId]
-  )
 
   const value = useMemo<DriveContextValue>(
     () => ({
@@ -819,20 +794,17 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       currentNav,
       currentDir,
       entries,
-      shares,
-      activeShareId,
-      shareDir,
-      shareEntries,
-      activeShare,
       selectedEntry,
       detailOpen,
       detailName,
       detailMeta,
       chunkList,
       toast,
-      inviteModal,
       prompt,
       dragging,
+      createNetworkModal,
+      joinNetworkModal,
+      networkInfoModal,
       setDragging,
       showToast,
       setAuthPanel,
@@ -840,17 +812,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       setAuthFlowActive,
       navigate,
       refreshFiles,
-      refreshShares,
-      refreshShareFiles,
-      openShare,
-      closeShare,
       setCurrentDir: (dir: string) => {
         setCurrentDirState(dir)
         currentDirRef.current = dir
-      },
-      setShareDir: (dir: string) => {
-        setShareDirState(dir)
-        shareDirRef.current = dir
       },
       onEntryClick,
       showDetail,
@@ -861,19 +825,23 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       askText,
       askConfirm,
       closePrompt,
-      openInviteModal,
-      closeInviteModal,
       resolveAuth,
       showAuthHome,
+      showApp,
+      createNetwork,
+      joinNetwork,
+      openCreateNetworkModal,
+      closeCreateNetworkModal,
+      openJoinNetworkModal,
+      closeJoinNetworkModal,
+      openNetworkInfoModal,
+      closeNetworkInfoModal,
       createAccount,
       confirmCreateAccount,
       unlock,
       logout,
       saveBlindPeers,
       mkdir,
-      createReadShare,
-      createCollabShare,
-      joinShare,
       downloadSelected,
       previewSelected,
       previewModal,
@@ -890,27 +858,20 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       currentNav,
       currentDir,
       entries,
-      shares,
-      activeShareId,
-      shareDir,
-      shareEntries,
-      activeShare,
       selectedEntry,
       detailOpen,
       detailName,
       detailMeta,
       chunkList,
       toast,
-      inviteModal,
       prompt,
       dragging,
+      createNetworkModal,
+      joinNetworkModal,
+      networkInfoModal,
       showToast,
       navigate,
       refreshFiles,
-      refreshShares,
-      refreshShareFiles,
-      openShare,
-      closeShare,
       onEntryClick,
       showDetail,
       closeDetail,
@@ -919,24 +880,29 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       askText,
       askConfirm,
       closePrompt,
-      openInviteModal,
-      closeInviteModal,
       resolveAuth,
       showAuthHome,
+      showApp,
+      createNetwork,
+      joinNetwork,
+      openCreateNetworkModal,
+      closeCreateNetworkModal,
+      openJoinNetworkModal,
+      closeJoinNetworkModal,
+      openNetworkInfoModal,
+      closeNetworkInfoModal,
       createAccount,
       confirmCreateAccount,
       unlock,
       logout,
       saveBlindPeers,
       mkdir,
-      createReadShare,
-      createCollabShare,
-      joinShare,
       downloadSelected,
       deleteSelected,
       copyClipboard
     ]
   )
+
 
   return <DriveContext.Provider value={value}>{children}</DriveContext.Provider>
 }

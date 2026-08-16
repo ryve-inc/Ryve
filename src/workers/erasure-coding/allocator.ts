@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { DEFAULT_EC_K, DEFAULT_EC_M } from './rs-instance'
 import type { ChunkPlacementResult, FaultToleranceStatus } from './types'
 
@@ -17,7 +16,7 @@ export function allocateChunksToPeers(
 ): ChunkPlacementResult {
   const N = chunks.length
   const P = peers.length
-  const distribution = new Map<any, any[]>()
+  const distribution = new Map<any, Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }>>()
   const warnings: string[] = []
 
   for (const peer of peers) {

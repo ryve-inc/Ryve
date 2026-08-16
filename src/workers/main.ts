@@ -1,4 +1,3 @@
-// @ts-nocheck
 import PearRuntime from 'pear-runtime'
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -10,7 +9,14 @@ import dir from 'bare-storage'
 import b4a from 'b4a'
 import { isBareKit } from 'which-runtime'
 
-import { createAccount, unlockFromMnemonic, publicIdentity } from './identity'
+import {
+  createAccount,
+  unlockFromMnemonic,
+  publicIdentity,
+  createNetworkKey,
+  parseNetworkLink,
+  deriveNetworkKeys
+} from './identity'
 import { VaultDrive } from './vault-drive'
 import { GlobalChunkStore } from './global-chunk-store'
 import {
@@ -24,25 +30,25 @@ import {
   pinCore
 } from './blind'
 
-const argv = (index) => Bare.argv[index + (isBareKit ? 0 : 2)]
+const argv = (index: number) => (Bare as any).argv[index + (isBareKit ? 0 : 2)]
 
 const updaterConfig = {
   updates: argv(0) !== 'false',
   version: argv(1),
   upgrade: argv(2),
   name: argv(3),
-  dir: argv(4) || dir.persistent(),
+  dir: argv(4) || (dir as any).persistent(),
   app: argv(5)
 }
 
-const pipe = new FramedStream(Bare.IPC)
+const pipe = new FramedStream((Bare as any).IPC)
 const pearStore = new Corestore(path.join(updaterConfig.dir, 'pear-runtime', 'corestore'))
 const swarm = new Hyperswarm()
 const pear = new PearRuntime({ ...updaterConfig, swarm, store: pearStore })
 
 pear.updater.on('error', console.error)
 if (updaterConfig.updates !== false) {
-  swarm.on('connection', (connection) => pearStore.replicate(connection))
+  swarm.on('connection', (connection: any) => pearStore.replicate(connection))
   swarm.join(pear.updater.drive.core.discoveryKey, {
     client: true,
     server: false
@@ -58,11 +64,32 @@ pear.updater.on('updated', () => pipe.write('updated'))
 const chunkStore = new GlobalChunkStore({ swarm, storageDir })
 chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
 
-const state = {
+interface State {
+  unlocked: boolean
+  primaryKey: Uint8Array | null
+  encryptionKey: Uint8Array | null
+  identityHex: string | null
+  networkKeyHex: string | null
+  networkLink: string | null
+  topicHex: string | null
+  networkDiscovery: any
+  vaultStore: any
+  vault: VaultDrive | null
+  chunkStore: GlobalChunkStore
+  blinds: any
+  settings: { blindPeerKeys: string[] }
+  peerCount: number
+}
+
+const state: State = {
   unlocked: false,
   primaryKey: null,
   encryptionKey: null,
   identityHex: null,
+  networkKeyHex: null,
+  networkLink: null,
+  topicHex: null,
+  networkDiscovery: null,
   vaultStore: null,
   vault: null,
   chunkStore,
@@ -73,13 +100,13 @@ const state = {
 
 let rpcChain = Promise.resolve()
 
-function withLock(fn) {
+function withLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = rpcChain.then(fn, fn)
-  rpcChain = run.catch(() => {})
+  rpcChain = run.catch(() => {}) as Promise<void>
   return run
 }
 
-swarm.on('connection', (conn) => {
+swarm.on('connection', (conn: any) => {
   state.peerCount++
   console.log(`[Network:Swarm] Peer connected! Active Hyperswarm peers: ${state.peerCount}`)
   emit({ type: 'event', name: 'status', data: statusPayload() })
@@ -91,12 +118,12 @@ swarm.on('connection', (conn) => {
   if (state.vaultStore) state.vaultStore.replicate(conn)
 })
 
-function emit(msg) {
+function emit(msg: unknown) {
   pipe.write(JSON.stringify(msg))
 }
 
-function reply(id, ok, result, error) {
-  emit({ id, ok, result, error: error ? String(error.message || error) : undefined })
+function reply(id: number, ok: boolean, result: unknown, error?: unknown) {
+  emit({ id, ok, result, error: error ? String((error as any).message || error) : undefined })
 }
 
 function statusPayload() {
@@ -106,7 +133,12 @@ function statusPayload() {
     driveKey: state.vault?.keyHex || null,
     peers: state.peerCount,
     blindPeerKeys: state.settings.blindPeerKeys || [],
-    shares: []
+    network: {
+      networkLink: state.networkLink,
+      networkKeyHex: state.networkKeyHex,
+      topicHex: state.topicHex,
+      joined: !!state.networkKeyHex
+    }
   }
 }
 
@@ -114,11 +146,15 @@ async function ensureSettings() {
   state.settings = await loadSettings(storageDir)
 }
 
-function vaultPathFor(identityHex) {
+function vaultPathFor(identityHex: string) {
   return path.join(storageDir, 'vaults', identityHex)
 }
 
 async function closeVault() {
+  if (state.networkDiscovery) {
+    await state.networkDiscovery.destroy().catch(() => {})
+    state.networkDiscovery = null
+  }
   if (state.vault) await state.vault.close().catch(() => {})
   if (state.blinds) await state.blinds.close().catch(() => {})
   if (state.vaultStore) await state.vaultStore.close().catch(() => {})
@@ -127,7 +163,14 @@ async function closeVault() {
   state.vaultStore = null
 }
 
-async function openVault(keys) {
+async function openVault(keys: {
+  primaryKey: Uint8Array
+  encryptionKey: Uint8Array
+  networkKeyHex?: string
+  networkLink?: string
+  topicHex?: string
+  swarmTopic?: Uint8Array
+}) {
   await ensureSettings()
   await closeVault()
 
@@ -135,7 +178,18 @@ async function openVault(keys) {
   state.encryptionKey = keys.encryptionKey
   state.identityHex = b4a.toString(publicIdentity(keys.primaryKey), 'hex')
 
-  const vaultPath = vaultPathFor(state.identityHex)
+  if (keys.networkKeyHex && keys.swarmTopic) {
+    state.networkKeyHex = keys.networkKeyHex
+    state.networkLink = keys.networkLink || `p2p-drive://network/${keys.networkKeyHex}`
+    state.topicHex = keys.topicHex || b4a.toString(keys.swarmTopic, 'hex')
+
+    // Join Network topic on Hyperswarm
+    state.networkDiscovery = swarm.join(keys.swarmTopic, { server: true, client: true })
+    await state.networkDiscovery.flushed().catch(() => {})
+    console.log(`[P2PNetwork] Joined network swarm topic: ${state.topicHex}`)
+  }
+
+  const vaultPath = vaultPathFor(state.identityHex!)
   await fs.promises.mkdir(vaultPath, { recursive: true })
   state.vaultStore = new Corestore(vaultPath, { primaryKey: keys.primaryKey, unsafe: true })
   await state.vaultStore.ready()
@@ -161,7 +215,10 @@ async function openVault(keys) {
     unlocked: true,
     primaryKey: b4a.toString(keys.primaryKey, 'hex'),
     encryptionKey: b4a.toString(keys.encryptionKey, 'hex'),
-    identityHex: state.identityHex
+    identityHex: state.identityHex,
+    networkKeyHex: state.networkKeyHex,
+    networkLink: state.networkLink,
+    topicHex: state.topicHex
   })
 
   return statusPayload()
@@ -175,9 +232,20 @@ async function tryAutoUnlock() {
     return
   }
   try {
+    let networkDetails: any = {}
+    if (session.networkKeyHex) {
+      const derived = deriveNetworkKeys(session.networkKeyHex)
+      networkDetails = {
+        networkKeyHex: session.networkKeyHex,
+        networkLink: derived.networkLink,
+        swarmTopic: derived.swarmTopic,
+        topicHex: derived.topicHex
+      }
+    }
     await openVault({
       primaryKey: b4a.from(session.primaryKey, 'hex'),
-      encryptionKey: b4a.from(session.encryptionKey, 'hex')
+      encryptionKey: b4a.from(session.encryptionKey, 'hex'),
+      ...networkDetails
     })
     emit({ type: 'event', name: 'auth', data: { needsAuth: false, status: statusPayload() } })
   } catch (err) {
@@ -187,9 +255,38 @@ async function tryAutoUnlock() {
   }
 }
 
-const handlers = {
+const handlers: Record<string, (params: any) => Promise<any>> = {
   async getStatus() {
     return statusPayload()
+  },
+
+  async createNetwork() {
+    const { networkKeyHex, networkLink } = createNetworkKey()
+    const derived = deriveNetworkKeys(networkKeyHex)
+    const status = await openVault({
+      primaryKey: derived.primaryKey,
+      encryptionKey: derived.encryptionKey,
+      networkKeyHex,
+      networkLink,
+      swarmTopic: derived.swarmTopic,
+      topicHex: derived.topicHex
+    })
+    return { status, networkLink, networkKeyHex }
+  },
+
+  async joinNetwork({ link }: { link: string }) {
+    if (!link) throw new Error('Enter a valid network invite link.')
+    const networkKeyHex = parseNetworkLink(link)
+    const derived = deriveNetworkKeys(networkKeyHex)
+    const status = await openVault({
+      primaryKey: derived.primaryKey,
+      encryptionKey: derived.encryptionKey,
+      networkKeyHex,
+      networkLink: derived.networkLink,
+      swarmTopic: derived.swarmTopic,
+      topicHex: derived.topicHex
+    })
+    return { status, networkLink: derived.networkLink, networkKeyHex }
   },
 
   async createAccount() {
@@ -200,13 +297,13 @@ const handlers = {
     }
   },
 
-  async confirmCreateAccount({ mnemonic }) {
+  async confirmCreateAccount({ mnemonic }: { mnemonic: string }) {
     const keys = unlockFromMnemonic(mnemonic)
     const status = await openVault(keys)
     return { status, mnemonic }
   },
 
-  async unlock({ mnemonic }) {
+  async unlock({ mnemonic }: { mnemonic: string }) {
     const keys = unlockFromMnemonic(mnemonic)
     const status = await openVault(keys)
     return { status }
@@ -218,6 +315,9 @@ const handlers = {
     state.primaryKey = null
     state.encryptionKey = null
     state.identityHex = null
+    state.networkKeyHex = null
+    state.networkLink = null
+    state.topicHex = null
     await clearSession(storageDir)
     emit({ type: 'event', name: 'auth', data: { needsAuth: true, status: statusPayload() } })
     return { needsAuth: true }
@@ -228,73 +328,41 @@ const handlers = {
     return state.vault.list(listDir)
   },
 
-  async mkdir({ path: dirPath }) {
+  async mkdir({ path: dirPath }: { path: string }) {
     if (!state.vault) throw new Error('Not unlocked')
     return state.vault.mkdir(dirPath)
   },
 
-  async upload({ localPath, destPath, mime }) {
+  async upload({ localPath, destPath, mime }: { localPath: string; destPath: string; mime?: string }) {
     if (!state.vault) throw new Error('Not unlocked')
     return state.vault.upload(localPath, destPath, mime)
   },
 
-  async download({ path: entryPath, destLocalPath }) {
+  async download({ path: entryPath, destLocalPath }: { path: string; destLocalPath: string }) {
     if (!state.vault) throw new Error('Not unlocked')
     return state.vault.download(entryPath, destLocalPath)
   },
 
-  async delete({ path: entryPath }) {
+  async delete({ path: entryPath }: { path: string }) {
     if (!state.vault) throw new Error('Not unlocked')
     return state.vault.delete(entryPath)
   },
 
-  async getChunkManifest({ path: entryPath }) {
+  async getChunkManifest({ path: entryPath }: { path: string }) {
     if (!state.vault) throw new Error('Not unlocked')
     return state.vault.getManifest(entryPath)
   },
 
-  async createReadShare() {
-    return { invite: '', type: 'read', pathPrefix: '/', id: '' }
-  },
-
-  async createCollabShare() {
-    return { invite: '', id: '', name: '', type: 'collab' }
-  },
-
-  async joinShare() {
-    return { id: '', name: 'Shared', type: 'collab' }
-  },
-
-  async listShares() {
-    return []
-  },
-
-  async listShareFiles() {
-    return []
-  },
-
-  async uploadToShare() {
-    throw new Error('Shares disabled')
-  },
-
-  async downloadFromShare() {
-    throw new Error('Shares disabled')
-  },
-
-  async getShareManifest() {
-    return { path: '', byteLength: 0, chunks: [] }
-  },
-
-  async setBlindPeers({ keys }) {
+  async setBlindPeers({ keys }: { keys: string[] }) {
     state.settings.blindPeerKeys = normalizeBlindKeys(keys)
     await saveSettings(storageDir, state.settings)
     if (state.blinds) await state.blinds.close().catch(() => {})
     if (state.vaultStore) {
       state.blinds = createBlindClient(swarm, state.vaultStore, state.settings.blindPeerKeys)
       if (state.vault?.drive) {
-        await pinCore(this.blinds, state.vault.drive.core)
+        await pinCore(state.blinds, state.vault.drive.core)
         if (state.vault.drive.blobs?.core) {
-          await pinCore(this.blinds, state.vault.drive.blobs.core)
+          await pinCore(state.blinds, state.vault.drive.blobs.core)
         }
       }
     }
@@ -303,6 +371,8 @@ const handlers = {
 }
 
 const mutateMethods = new Set([
+  'createNetwork',
+  'joinNetwork',
   'confirmCreateAccount',
   'unlock',
   'logout',
@@ -313,7 +383,7 @@ const mutateMethods = new Set([
   'setBlindPeers'
 ])
 
-pipe.on('data', async (data) => {
+pipe.on('data', async (data: any) => {
   const message = data.toString()
   if (message === 'pear:applyUpdate') {
     await pear.ready()
@@ -322,7 +392,7 @@ pipe.on('data', async (data) => {
     return
   }
 
-  let msg
+  let msg: any
   try {
     msg = JSON.parse(message)
   } catch {
@@ -369,5 +439,6 @@ const autoUnlockPromise = withLock(() => tryAutoUnlock()).catch((err) => {
 const originalGetStatus = handlers.getStatus
 handlers.getStatus = async () => {
   await autoUnlockPromise
-  return originalGetStatus()
+  return originalGetStatus({})
 }
+

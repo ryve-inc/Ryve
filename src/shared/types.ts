@@ -38,22 +38,20 @@ export type DriveEntry = {
   chunkCount?: number
 }
 
+export type NetworkInfo = {
+  networkLink: string | null
+  networkKeyHex: string | null
+  topicHex: string | null
+  joined: boolean
+}
+
 export type AppStatus = {
   unlocked: boolean
   identity: string | null
   driveKey: string | null
   peers: number
   blindPeerKeys: string[]
-  shares: ShareInfo[]
-}
-
-export type ShareInfo = {
-  id: string
-  name: string
-  type: 'read' | 'collab'
-  pathPrefix: string
-  writable: boolean
-  from: string | null
+  network: NetworkInfo
 }
 
 export type BridgeApi = {
@@ -85,3 +83,4 @@ declare global {
 }
 
 export {}
+

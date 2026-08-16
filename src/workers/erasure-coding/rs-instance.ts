@@ -1,5 +1,12 @@
-// @ts-nocheck
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm'
+
+function getModule(name: string): any {
+  if (typeof require !== 'undefined') {
+    try { return require(name) } catch {}
+  }
+  return null
+}
+
 
 export const DEFAULT_EC_K = 4
 export const DEFAULT_EC_M = 2
@@ -8,31 +15,18 @@ let rsInstance: ReedSolomonErasure | null = null
 
 export function getRSInstance(): ReedSolomonErasure {
   if (!rsInstance) {
-    let fs: any
-    let path: any
+    const fsModule = getModule('bare-fs') || getModule('fs')
+    const pathModule = getModule('bare-path') || getModule('path')
 
-    if (typeof Bare !== 'undefined') {
-      fs = require('bare-fs')
-      path = require('bare-path')
-    } else {
-      const getBuiltin = (process as any).getBuiltinModule?.bind(process)
-      if (getBuiltin) {
-        fs = getBuiltin('fs')
-        path = getBuiltin('path')
-      } else {
-        const mainReq = (process as any).mainModule?.require?.bind((process as any).mainModule)
-        fs = mainReq ? mainReq('fs') : null
-        path = mainReq ? mainReq('path') : null
-      }
-    }
 
-    if (!fs || !path) {
+
+    if (!fsModule || !pathModule) {
       throw new Error('[ErasureCoding] Could not initialize filesystem module.')
     }
 
     const candidatePaths = [
-      path.resolve('dist/workers/reed_solomon_erasure_bg.wasm'),
-      path.resolve('node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
+      pathModule.resolve('dist/workers/reed_solomon_erasure_bg.wasm'),
+      pathModule.resolve('node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
       './dist/workers/reed_solomon_erasure_bg.wasm',
       './node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'
     ]
@@ -40,7 +34,7 @@ export function getRSInstance(): ReedSolomonErasure {
     let wasmBytes: Uint8Array | null = null
     for (const p of candidatePaths) {
       try {
-        wasmBytes = fs.readFileSync(p)
+        wasmBytes = fsModule.readFileSync(p)
         if (wasmBytes && wasmBytes.byteLength > 0) break
       } catch {}
     }
@@ -53,3 +47,4 @@ export function getRSInstance(): ReedSolomonErasure {
   }
   return rsInstance
 }
+

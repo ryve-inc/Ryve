@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
@@ -7,24 +6,32 @@ import { encodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-coding'
 import { normalizePath } from './path-utils'
 import { encryptBuffer, hashChunk } from './crypto-utils'
 
-export async function uploadFile({ drive, chunkStore, encryptionKey, localPath, destPath, mime = null }: {
+export async function uploadFile({
+  drive,
+  chunkStore,
+  encryptionKey,
+  localPath,
+  destPath,
+  mime = null
+}: {
   drive: any
   chunkStore: any
-  encryptionKey: any
+  encryptionKey: Uint8Array | string
   localPath: string
   destPath: string
   mime?: string | null
 }) {
   const dest = normalizePath(destPath)
-  const rawBuffer = await fs.promises.readFile(localPath)
+  const rawBuffer: any = await fs.promises.readFile(localPath)
+
 
   // 1. Encrypt raw file buffer locally with master encryption key
   const { encrypted, nonce } = encryptBuffer(rawBuffer, encryptionKey)
 
   // 2. Perform Reed-Solomon Erasure Coding (K=4 data shards, M=2 parity shards)
   const ecResult = encodeBuffer(encrypted, DEFAULT_EC_K, DEFAULT_EC_M)
-  const chunks = []
-  const chunkMetadata = []
+  const chunks: Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }> = []
+  const chunkMetadata: Array<{ index: number; isParity: boolean; offset: number; length: number; hash: string }> = []
 
   for (const shard of ecResult.shards) {
     const hash = hashChunk(shard.buffer)
@@ -91,3 +98,4 @@ export async function uploadFile({ drive, chunkStore, encryptionKey, localPath, 
     metadata: meta
   }
 }
+

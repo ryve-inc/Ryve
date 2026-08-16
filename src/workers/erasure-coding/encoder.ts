@@ -1,4 +1,3 @@
-// @ts-nocheck
 import b4a from 'b4a'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm'
 import { getRSInstance, DEFAULT_EC_K, DEFAULT_EC_M } from './rs-instance'
@@ -40,7 +39,7 @@ export function encodeBuffer(
   }
 
   // Extract individual shard buffers
-  const shards = []
+  const shards: Array<{ index: number; isParity: boolean; buffer: Uint8Array }> = []
   for (let i = 0; i < k + m; i++) {
     const start = i * chunkSize
     const end = start + chunkSize
@@ -60,3 +59,4 @@ export function encodeBuffer(
     shards
   }
 }
+

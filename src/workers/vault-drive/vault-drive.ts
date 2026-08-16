@@ -1,25 +1,30 @@
-// @ts-nocheck
 import Hyperdrive from 'hyperdrive'
 import idEnc from 'hypercore-id-encoding'
 import b4a from 'b4a'
 
-import { normalizePath, joinPath, underPrefix } from './path-utils'
+import { normalizePath, joinPath } from './path-utils'
 import { uploadFile } from './uploader'
 import { downloadFile } from './downloader'
 
 class VaultDrive {
   store: any
   swarm: any
-  encryptionKey: any
+  encryptionKey: Uint8Array | string
   blinds: any
   chunkStore: any
   drive: any
   _discovery: any
 
-  constructor({ store, swarm, encryptionKey, blinds = null, chunkStore = null }: {
+  constructor({
+    store,
+    swarm,
+    encryptionKey,
+    blinds = null,
+    chunkStore = null
+  }: {
     store: any
     swarm: any
-    encryptionKey: any
+    encryptionKey: Uint8Array | string
     blinds?: any
     chunkStore?: any
   }) {
@@ -46,13 +51,13 @@ class VaultDrive {
     return this.drive?.key
   }
 
-  get keyHex() {
+  get keyHex(): string | null {
     return this.drive ? idEnc.normalize(this.drive.key) : null
   }
 
   async list(dir = '/') {
     const folder = normalizePath(dir)
-    const names = new Map()
+    const names = new Map<string, any>()
     const stream = this.drive.list(folder, { recursive: true })
     for await (const entry of stream) {
       if (entry.key === '/.share.json') continue
@@ -145,3 +150,4 @@ class VaultDrive {
 }
 
 export { VaultDrive }
+

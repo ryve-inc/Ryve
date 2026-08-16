@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
@@ -162,3 +161,4 @@ class GlobalChunkStore {
 }
 
 export { GlobalChunkStore, CHUNK_POOL_TOPIC }
+

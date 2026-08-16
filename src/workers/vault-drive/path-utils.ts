@@ -1,4 +1,3 @@
-// @ts-nocheck
 export function normalizePath(p: string): string {
   if (!p || p === '/') return '/'
   const parts: string[] = []
@@ -26,3 +25,4 @@ export function underPrefix(filePath: string, prefix: string): boolean {
   if (pre === '/') return true
   return p === pre || p.startsWith(pre + '/')
 }
+

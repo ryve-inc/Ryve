@@ -1,4 +1,3 @@
-// @ts-nocheck
 import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
@@ -7,10 +6,16 @@ import { decodeBuffer } from '../erasure-coding'
 import { normalizePath } from './path-utils'
 import { decryptBuffer, hashChunk } from './crypto-utils'
 
-export async function downloadFile({ drive, chunkStore, encryptionKey, entryPath, destLocalPath }: {
+export async function downloadFile({
+  drive,
+  chunkStore,
+  encryptionKey,
+  entryPath,
+  destLocalPath
+}: {
   drive: any
   chunkStore: any
-  encryptionKey: any
+  encryptionKey: Uint8Array | string
   entryPath: string
   destLocalPath: string
 }) {
@@ -69,7 +74,7 @@ export async function downloadFile({ drive, chunkStore, encryptionKey, entryPath
     encryptedBuffer = decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
   } else {
     // Legacy download path for backward compatibility
-    const encryptedChunks = []
+    const encryptedChunks: Uint8Array[] = []
     for (const chunkMeta of meta.chunks) {
       if (!chunkStore) {
         throw new Error('Global chunk store unavailable.')
@@ -111,3 +116,4 @@ export async function downloadFile({ drive, chunkStore, encryptionKey, entryPath
 
   return { path: p, destLocalPath: finalDest, verified: true }
 }
+

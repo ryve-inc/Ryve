@@ -1,44 +1,92 @@
-// @ts-nocheck
-import path from 'bare-path'
-import fs from 'bare-fs'
-import b4a from 'b4a'
+import * as fs from 'bare-fs'
+import { asBytes } from '../as-bytes'
 import ProtomuxRPC from 'protomux-rpc'
-import c from 'compact-encoding'
+import { CHUNK_RPC_PROTOCOL, chunkMessageEncoding, emptyChunkMessage } from './encoding'
+import { chunkFilePath, hashBuffer, normalizeChunkHash, writeFileAtomic } from './util'
+import type { ChunkMessage, SwarmSocket } from './types'
 
-export function setupConnectionRpc(conn: any, swarm: any, cacheDir: string) {
+export const MAX_STORE_CHUNK_BYTES = 256 * 1024 * 1024
+const MAX_IN_FLIGHT_STORES = 4
+
+function asChunkMessage(req: unknown): ChunkMessage {
+  if (!req || typeof req !== 'object') throw new Error('Invalid chunk payload')
+  const value = req as Partial<ChunkMessage>
+  if (typeof value.hash !== 'string') throw new Error('Invalid chunk payload')
+  return {
+    hash: value.hash,
+    data: value.data instanceof Uint8Array ? value.data : emptyChunkMessage().data,
+    ok: value.ok !== false
+  }
+}
+
+export function setupConnectionRpc(
+  conn: SwarmSocket,
+  swarm: { connections: { size: number } },
+  cacheDir: string
+): void {
   if (conn._chunkRpc) return
 
-  console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${swarm.connections.size}`)
+  console.log(
+    `[ChunkStore:Network] Swarm socket connected. Active peers: ${swarm.connections.size}`
+  )
 
   const rpc = new ProtomuxRPC(conn, {
-    protocol: 'p2cloud-chunk-store-v1',
-    valueEncoding: c.json
+    protocol: CHUNK_RPC_PROTOCOL,
+    valueEncoding: chunkMessageEncoding
   })
 
   conn._chunkRpc = rpc
+  let inFlightStores = 0
 
   rpc.respond('get-chunk', async (req) => {
-    if (!req || !req.hash) throw new Error('Invalid request')
-    const chunkPath = path.join(cacheDir, req.hash + '.bin')
+    const message = asChunkMessage(req)
+    const hash = normalizeChunkHash(message.hash)
+    const chunkPath = chunkFilePath(cacheDir, hash)
+    let buf: Uint8Array
     try {
-      const buf = await fs.promises.readFile(chunkPath)
-      console.log(`[ChunkStore:Server] Serving chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes)`)
-      return { hash: req.hash, data: b4a.toString(buf, 'hex') }
-    } catch (err) {
-      throw new Error(`Chunk ${req.hash.slice(0, 12)} not found in local cache`)
+      buf = asBytes(await fs.promises.readFile(chunkPath))
+    } catch {
+      throw new Error(`Chunk ${hash.slice(0, 12)} not found in local cache`)
     }
+    if (hashBuffer(buf) !== hash) {
+      await fs.promises.unlink(chunkPath).catch(() => {})
+      throw new Error(`Chunk ${hash.slice(0, 12)} failed integrity check`)
+    }
+    console.log(`[ChunkStore:Server] Serving chunk ${hash.slice(0, 12)} (${buf.byteLength} bytes)`)
+    return { hash, data: buf, ok: true }
   })
 
   rpc.respond('store-chunk', async (req) => {
-    if (!req || !req.hash || !req.data) throw new Error('Invalid store chunk payload')
-    const chunkPath = path.join(cacheDir, req.hash + '.bin')
-    const buf = b4a.from(req.data, 'hex')
-    await fs.promises.writeFile(chunkPath, buf)
-    console.log(`[ChunkStore:Cache] Stored chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes) from remote peer`)
-    return { ok: true, hash: req.hash }
+    if (inFlightStores >= MAX_IN_FLIGHT_STORES) {
+      throw new Error('Too many in-flight store requests')
+    }
+    inFlightStores++
+    try {
+      const message = asChunkMessage(req)
+      const hash = normalizeChunkHash(message.hash)
+      const buf = message.data
+      if (!buf.byteLength) throw new Error('Invalid store chunk payload')
+      if (buf.byteLength > MAX_STORE_CHUNK_BYTES) {
+        throw new Error(`Chunk ${hash.slice(0, 12)} exceeds size limit`)
+      }
+      if (hashBuffer(buf) !== hash) {
+        throw new Error(`Chunk ${hash.slice(0, 12)} hash mismatch`)
+      }
+      await writeFileAtomic(chunkFilePath(cacheDir, hash), buf)
+      console.log(
+        `[ChunkStore:Cache] Stored chunk ${hash.slice(0, 12)} (${buf.byteLength} bytes) from remote peer`
+      )
+      return { hash, data: emptyChunkMessage().data, ok: true }
+    } finally {
+      inFlightStores--
+    }
   })
 
   conn.on('close', () => {
-    console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${swarm.connections.size}`)
+    if (conn._chunkRpc === rpc) conn._chunkRpc = null
+    if (typeof rpc.destroy === 'function') rpc.destroy()
+    console.log(
+      `[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${swarm.connections.size}`
+    )
   })
 }

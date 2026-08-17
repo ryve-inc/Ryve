@@ -6,7 +6,7 @@ export function NewFolderButton() {
 
   return (
     <Button
-      variant="ghost"
+      variant='ghost'
       onClick={async () => {
         try {
           const name = await askText('New folder', '', 'Name for the folder in this directory.')

@@ -10,7 +10,7 @@ export function SaveBlindPeersButton({ value }: Props) {
 
   return (
     <Button
-      className="w-fit"
+      className='w-fit'
       onClick={async () => {
         try {
           await saveBlindPeers(value)

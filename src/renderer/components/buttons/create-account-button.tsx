@@ -8,7 +8,7 @@ export function CreateAccountButton() {
 
   return (
     <Button
-      className="w-full"
+      className='w-full'
       disabled={busy}
       onClick={async () => {
         try {

@@ -6,7 +6,7 @@ type Props = {
 
 export function ConfirmSubmitButton({ busy }: Props) {
   return (
-    <Button type="submit" disabled={busy}>
+    <Button type='submit' disabled={busy}>
       Open drive
     </Button>
   )

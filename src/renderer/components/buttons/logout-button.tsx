@@ -6,8 +6,8 @@ export function LogoutButton() {
 
   return (
     <Button
-      variant="destructive"
-      className="w-fit"
+      variant='destructive'
+      className='w-fit'
       onClick={async () => {
         try {
           await logout()

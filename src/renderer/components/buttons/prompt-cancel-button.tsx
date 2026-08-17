@@ -5,7 +5,7 @@ export function PromptCancelButton() {
   const { prompt, closePrompt } = useDrive()
 
   return (
-    <Button variant="ghost" onClick={() => closePrompt(null)}>
+    <Button variant='ghost' onClick={() => closePrompt(null)}>
       {prompt.cancelLabel}
     </Button>
   )

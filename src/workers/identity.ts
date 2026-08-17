@@ -1,40 +1,46 @@
-// @ts-nocheck
-import b4a from 'b4a'
+import * as b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
 import sodium from 'sodium-universal'
 import wordlist from './bip39-english.json' with { type: 'json' }
 
-function sha256(data) {
+const words = wordlist as string[]
+
+export type AccountKeys = {
+  mnemonic: string
+  primaryKey: Uint8Array
+  encryptionKey: Uint8Array
+}
+
+function sha256(data: Uint8Array): Uint8Array {
   const out = b4a.alloc(32)
   sodium.crypto_hash_sha256(out, data)
   return out
 }
 
-function entropyToMnemonic(entropy) {
+function entropyToMnemonic(entropy: Uint8Array): string {
   if (entropy.byteLength !== 32) throw new Error('Expected 32 bytes of entropy')
   const hash = sha256(entropy)
-  // 256 bits entropy + 8 bit checksum = 264 bits → 24 words
-  const bits = []
+  const bits: number[] = []
   for (let i = 0; i < entropy.byteLength; i++) {
     for (let b = 7; b >= 0; b--) bits.push((entropy[i] >> b) & 1)
   }
   for (let b = 7; b >= 0; b--) bits.push((hash[0] >> b) & 1)
 
-  const words = []
+  const out: string[] = []
   for (let i = 0; i < 24; i++) {
     let idx = 0
     for (let j = 0; j < 11; j++) idx = (idx << 1) | bits[i * 11 + j]
-    words.push(wordlist[idx])
+    out.push(words[idx])
   }
-  return words.join(' ')
+  return out.join(' ')
 }
 
-function mnemonicToEntropy(mnemonic) {
-  const words = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ').split(' ')
-  if (words.length !== 24) throw new Error('Recovery key must be 24 words')
-  const bits = []
-  for (const word of words) {
-    const idx = wordlist.indexOf(word)
+function mnemonicToEntropy(mnemonic: string): Uint8Array {
+  const parts = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ').split(' ')
+  if (parts.length !== 24) throw new Error('Recovery key must be 24 words')
+  const bits: number[] = []
+  for (const word of parts) {
+    const idx = words.indexOf(word)
     if (idx === -1) throw new Error('Invalid word in recovery key: ' + word)
     for (let j = 10; j >= 0; j--) bits.push((idx >> j) & 1)
   }
@@ -53,14 +59,12 @@ function mnemonicToEntropy(mnemonic) {
   return entropy
 }
 
-function mnemonicToSeed(mnemonic) {
-  // PBKDF2-HMAC-SHA512 is heavy; use blake2b domain-separated seed derivation
-  // compatible for this app (not BIP39 seed, but deterministic from mnemonic entropy).
+function mnemonicToSeed(mnemonic: string): Uint8Array {
   const entropy = mnemonicToEntropy(mnemonic)
   return hypercoreCrypto.hash(b4a.concat([b4a.from('pear-drive/bip39-seed/v1'), entropy]))
 }
 
-function deriveKeys(seed) {
+function deriveKeys(seed: Uint8Array): { primaryKey: Uint8Array; encryptionKey: Uint8Array } {
   const seedBuf = b4a.from(seed)
   const primaryKey = hypercoreCrypto.hash(b4a.concat([b4a.from('pear-drive/primary/v1'), seedBuf]))
   const encryptionKey = hypercoreCrypto.hash(
@@ -69,22 +73,19 @@ function deriveKeys(seed) {
   return { primaryKey, encryptionKey }
 }
 
-function createAccount() {
+export function createAccount(): AccountKeys {
   const entropy = hypercoreCrypto.randomBytes(32)
   const mnemonic = entropyToMnemonic(entropy)
   const seed = mnemonicToSeed(mnemonic)
-  const keys = deriveKeys(seed)
-  return { mnemonic, ...keys }
+  return { mnemonic, ...deriveKeys(seed) }
 }
 
-function unlockFromMnemonic(mnemonic) {
+export function unlockFromMnemonic(mnemonic: string): AccountKeys {
   const normalized = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ')
   const seed = mnemonicToSeed(normalized)
   return { mnemonic: normalized, ...deriveKeys(seed) }
 }
 
-function publicIdentity(primaryKey) {
+export function publicIdentity(primaryKey: Uint8Array): Uint8Array {
   return hypercoreCrypto.hash(b4a.concat([b4a.from('pear-drive/id/v1'), primaryKey]))
 }
-
-export { createAccount, unlockFromMnemonic, publicIdentity }

@@ -1,4 +1,4 @@
-export type FaultToleranceStatus = 'full' | 'degraded' | 'critical' | 'none'
+export type FaultToleranceStatus = 'full' | 'degraded' | 'none'
 
 export type ChunkInfo = {
   index: number
@@ -12,7 +12,7 @@ export type ChunkManifest = {
   path: string
   byteLength: number
   mime: string | null
-  blob: {
+  blob?: {
     blockOffset: number
     blockLength: number
     byteOffset: number
@@ -44,44 +44,41 @@ export type AppStatus = {
   driveKey: string | null
   peers: number
   blindPeerKeys: string[]
-  shares: ShareInfo[]
 }
 
-export type ShareInfo = {
-  id: string
+export type FilePreviewResult =
+  | {
+      tooLarge: false
+      path: string
+      name: string
+      mime: string | null
+      bytes: string
+      verified: boolean
+      byteLength: number
+    }
+  | {
+      tooLarge: true
+      path: string
+      name: string
+      mime: string | null
+      byteLength: number
+    }
+
+export type BridgeFile = {
   name: string
-  type: 'read' | 'collab'
-  pathPrefix: string
-  writable: boolean
-  from: string | null
 }
 
 export type BridgeApi = {
   applyUpdate: () => Promise<void>
   appAfterUpdate: () => Promise<void>
   startWorker: (specifier: string) => Promise<boolean>
-  onWorkerStdout: (specifier: string, listener: (data: Buffer) => void) => () => void
-  onWorkerStderr: (specifier: string, listener: (data: Buffer) => void) => () => void
-  onWorkerIPC: (specifier: string, listener: (data: Buffer) => void) => () => void
+  onWorkerStdout: (specifier: string, listener: (data: Uint8Array) => void) => () => void
+  onWorkerStderr: (specifier: string, listener: (data: Uint8Array) => void) => () => void
+  onWorkerIPC: (specifier: string, listener: (data: Uint8Array) => void) => () => void
   onWorkerExit: (specifier: string, listener: (code: number) => void) => () => void
   writeWorkerIPC: (specifier: string, data: string | Uint8Array) => Promise<unknown>
-  getPathForFile: (file: File) => string
+  getPathForFile: (file: BridgeFile) => string
   writeClipboard: (text: string) => Promise<void>
   chooseDownloadPath: (defaultName?: string) => Promise<string | null>
   chooseUploadFiles: () => Promise<string[]>
 }
-
-declare global {
-  interface Window {
-    bridge?: BridgeApi
-  }
-
-  // Bare globals available inside the pear-runtime worker
-  // eslint-disable-next-line no-var
-  var Bare: {
-    argv: string[]
-    IPC: unknown
-  }
-}
-
-export {}

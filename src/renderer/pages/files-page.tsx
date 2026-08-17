@@ -8,16 +8,16 @@ export function FilesPage() {
   return (
     <div>
       {entries.length === 0 && currentDir === '/' ? (
-        <div className="panel-surface border-dashed p-14 text-center">
-          <p className="display-heading m-0 text-3xl">Drop files</p>
-          <p className="mt-2 text-sm text-mute">or use Upload. No seats, no surprises.</p>
+        <div className='panel-surface border-dashed p-14 text-center'>
+          <p className='display-heading m-0 text-3xl'>Drop files</p>
+          <p className='mt-2 text-sm text-mute'>or use Upload. No seats, no surprises.</p>
         </div>
       ) : null}
-      <ul className="m-0 grid list-none gap-2 p-0">
+      <ul className='m-0 grid list-none gap-2 p-0'>
         {currentDir !== '/' ? (
           <FileRow
-            title=".."
-            meta="Parent folder"
+            title='..'
+            meta='Parent folder'
             onClick={() => {
               setCurrentDir(parentOf(currentDir))
               refreshFiles().catch((err) => showToast(err.message))

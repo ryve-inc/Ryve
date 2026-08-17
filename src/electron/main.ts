@@ -30,8 +30,7 @@ const appName = productName ?? name
 const cmd = command(
   appName,
   flag('--storage <dir>', 'pass custom storage to pear-runtime'),
-  flag('--no-updates', 'start without OTA updates'),
-  flag('--no-sandbox', 'start without Chromium sandbox').hide()
+  flag('--no-updates', 'start without OTA updates')
 )
 
 cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
@@ -93,7 +92,7 @@ function getWorker(specifier: string) {
   const entry = resolveWorkerEntry(specifier)
 
   const worker = PearRuntime.run(entry, [
-    updates,
+    String(updates === false || updates === 'false' ? false : (updates ?? true)),
     version,
     upgrade,
     (productName || name) + extension,
@@ -102,15 +101,15 @@ function getWorker(specifier: string) {
   ])
   const pipe = new FramedStream(worker)
 
-  const sendWorkerStdout = (data: Buffer) => {
+  const sendWorkerStdout = (data: Uint8Array) => {
     process.stdout.write(data)
     sendToAll('pear:worker:stdout:' + specifier, data)
   }
-  const sendWorkerStderr = (data: Buffer) => {
+  const sendWorkerStderr = (data: Uint8Array) => {
     process.stderr.write(data)
     sendToAll('pear:worker:stderr:' + specifier, data)
   }
-  const sendWorkerIPC = (data: Buffer) => sendToAll('pear:worker:ipc:' + specifier, data)
+  const sendWorkerIPC = (data: Uint8Array) => sendToAll('pear:worker:ipc:' + specifier, data)
   const onBeforeQuit = () => pipe.destroy()
 
   ipcMain.handle('pear:worker:writeIPC:' + specifier, (_evt, data) => pipe.write(data))
@@ -206,7 +205,7 @@ ipcMain.handle('pear:applyUpdate', () => {
       reject(new Error('Update timed out'))
     }, 120_000)
 
-    function onData(data: Buffer) {
+    function onData(data: Uint8Array) {
       if (data.toString() === 'pear:updateApplied') {
         clearTimeout(timer)
         pipe.removeListener('data', onData)
@@ -252,7 +251,6 @@ function focusMainWindow() {
 function handleDeepLink(url: string) {
   console.log('deep link:', url)
   focusMainWindow()
-  sendToAll('pear:deepLink', url)
 }
 
 app.setAsDefaultProtocolClient(protocol)

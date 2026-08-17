@@ -8,34 +8,21 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { AppStatus, ChunkManifest, DriveEntry, ShareInfo } from '../../shared/types.ts'
+import type { AppStatus, ChunkManifest, DriveEntry, FilePreviewResult } from '../../shared/types.ts'
 import { assertEntryName, formatBytes, joinPath, normalizeMnemonic } from '@/lib/format'
-import { decoder, getBridge, rpc, settlePending } from '@/lib/rpc'
-import {
-  ensureWorkerStarted,
-  subscribeWorkerExit,
-  subscribeWorkerIpc
-} from '@/lib/worker-bridge'
+import { decoder, getBridge, LONG_RPC_TIMEOUT_MS, rpc, settlePending } from '@/lib/rpc'
+import { ensureWorkerStarted, subscribeWorkerExit, subscribeWorkerIpc } from '@/lib/worker-bridge'
 
 export type AuthPanel = 'boot' | 'home' | 'create' | 'confirm' | 'unlock'
-export type NavName = 'files' | 'shared' | 'settings'
+export type NavName = 'files' | 'settings'
 
 export type SelectedEntry = {
   path: string
-  source: 'vault' | 'share'
-  shareId?: string | null
+  source: 'vault'
   manifest?: ChunkManifest
 }
 
-export type InviteModalState = {
-  open: boolean
-  title: string
-  body: string
-  invite: string
-}
-
 export type PromptMode = 'text' | 'confirm' | 'choice'
-
 export type PromptChoice = { label: string; value: string }
 
 export type PromptState = {
@@ -49,6 +36,15 @@ export type PromptState = {
   choices: PromptChoice[]
 }
 
+export type PreviewModalState = {
+  open: boolean
+  name: string
+  url: string | null
+  mime: string | null
+  content: string | null
+  error: string | null
+}
+
 type DriveContextValue = {
   status: AppStatus
   view: 'auth' | 'app'
@@ -58,18 +54,12 @@ type DriveContextValue = {
   currentNav: NavName
   currentDir: string
   entries: DriveEntry[]
-  shares: ShareInfo[]
-  activeShareId: string | null
-  shareDir: string
-  shareEntries: DriveEntry[]
-  activeShare: ShareInfo | null
   selectedEntry: SelectedEntry | null
   detailOpen: boolean
   detailName: string
   detailMeta: string
   chunkList: string
   toast: string | null
-  inviteModal: InviteModalState
   prompt: PromptState
   dragging: boolean
   setDragging: (value: boolean) => void
@@ -79,17 +69,12 @@ type DriveContextValue = {
   setAuthFlowActive: (value: boolean) => void
   navigate: (name: NavName) => void
   refreshFiles: () => Promise<void>
-  refreshShares: () => Promise<void>
-  refreshShareFiles: () => Promise<void>
-  openShare: (share: ShareInfo) => Promise<void>
-  closeShare: () => void
   setCurrentDir: (dir: string) => void
-  setShareDir: (dir: string) => void
   onEntryClick: (entry: DriveEntry) => Promise<void>
-  showDetail: (path: string, shareId?: string | null) => Promise<void>
+  showDetail: (path: string) => Promise<void>
   closeDetail: () => void
   uploadPaths: () => Promise<void>
-  uploadFiles: (fileList: FileList | File[], opts?: { share?: boolean }) => Promise<void>
+  uploadFiles: (fileList: FileList | File[]) => Promise<void>
   askDialog: (opts: {
     title: string
     body?: string
@@ -102,32 +87,18 @@ type DriveContextValue = {
   askText: (title: string, defaultValue?: string, body?: string) => Promise<string | null>
   askConfirm: (title: string, body?: string) => Promise<boolean>
   closePrompt: (value: string | boolean | null) => void
-  openInviteModal: (state: Omit<InviteModalState, 'open'>) => void
-  closeInviteModal: () => void
   resolveAuth: (unlocked: boolean, nextStatus?: AppStatus | null) => void
-  showAuthHome: () => void
   createAccount: () => Promise<void>
   confirmCreateAccount: (typed: string) => Promise<void>
   unlock: (mnemonic: string) => Promise<void>
   logout: () => Promise<void>
   saveBlindPeers: (keysText: string) => Promise<void>
   mkdir: (name: string) => Promise<void>
-  createReadShare: () => Promise<void>
-  createCollabShare: (name: string) => Promise<void>
-  joinShare: (invite: string) => Promise<void>
   downloadSelected: () => Promise<void>
   previewSelected: () => Promise<void>
-  previewModal: {
-    open: boolean
-    name: string
-    url: string | null
-    mime: string | null
-    content: string | null
-    error: string | null
-  }
+  previewModal: PreviewModalState
   closePreviewModal: () => void
   deleteSelected: () => Promise<void>
-  copyClipboard: (text: string) => void
 }
 
 const emptyStatus: AppStatus = {
@@ -135,15 +106,7 @@ const emptyStatus: AppStatus = {
   identity: null,
   driveKey: null,
   peers: 0,
-  blindPeerKeys: [],
-  shares: []
-}
-
-const closedInvite: InviteModalState = {
-  open: false,
-  title: '',
-  body: '',
-  invite: ''
+  blindPeerKeys: []
 }
 
 const closedPrompt: PromptState = {
@@ -157,7 +120,31 @@ const closedPrompt: PromptState = {
   choices: []
 }
 
+const closedPreview: PreviewModalState = {
+  open: false,
+  name: '',
+  url: null,
+  mime: null,
+  content: null,
+  error: null
+}
+
 const DriveContext = createContext<DriveContextValue | null>(null)
+
+function fileBaseName(name: string): string {
+  return assertEntryName(name.split(/[/\\]/).filter(Boolean).pop() || 'file')
+}
+
+function bytesFromBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  const out = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+  return out
+}
+
+function isTextPreview(mime: string | null, name: string): boolean {
+  return Boolean(mime?.startsWith('text/') || /\.(txt|md|js|json|ts|py|html|css)$/i.test(name))
+}
 
 export function DriveProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AppStatus>(emptyStatus)
@@ -169,32 +156,29 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const [currentNav, setCurrentNav] = useState<NavName>('files')
   const [currentDir, setCurrentDirState] = useState('/')
   const [entries, setEntries] = useState<DriveEntry[]>([])
-  const [shares, setShares] = useState<ShareInfo[]>([])
-  const [activeShareId, setActiveShareId] = useState<string | null>(null)
-  const [shareDir, setShareDirState] = useState('/')
-  const [shareEntries, setShareEntries] = useState<DriveEntry[]>([])
   const [selectedEntry, setSelectedEntry] = useState<SelectedEntry | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailName, setDetailName] = useState('File')
   const [detailMeta, setDetailMeta] = useState('')
   const [chunkList, setChunkList] = useState('')
   const [toast, setToast] = useState<string | null>(null)
-  const [inviteModal, setInviteModal] = useState<InviteModalState>(closedInvite)
   const [prompt, setPrompt] = useState<PromptState>(closedPrompt)
   const [dragging, setDragging] = useState(false)
+  const [previewModal, setPreviewModal] = useState<PreviewModalState>(closedPreview)
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const promptResolve = useRef<((value: string | boolean | null) => void) | null>(null)
   const detailRequestId = useRef(0)
+  const listRequestId = useRef(0)
   const authFlowActiveRef = useRef(authFlowActive)
   const authResolvedRef = useRef(authResolved)
-  const statusRef = useRef(status)
   const currentDirRef = useRef(currentDir)
-  const activeShareIdRef = useRef(activeShareId)
-  const shareDirRef = useRef(shareDir)
-  const sharesRef = useRef(shares)
-  const askConfirmRef = useRef<(title: string, body?: string) => Promise<boolean>>(async () => false)
-  const resolveAuthRef = useRef<(unlocked: boolean, nextStatus?: AppStatus | null) => void>(() => {})
+  const askConfirmRef = useRef<(title: string, body?: string) => Promise<boolean>>(
+    async () => false
+  )
+  const resolveAuthRef = useRef<(unlocked: boolean, nextStatus?: AppStatus | null) => void>(
+    () => {}
+  )
   const showToastRef = useRef<(msg: string) => void>(() => {})
 
   useEffect(() => {
@@ -204,20 +188,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     authResolvedRef.current = authResolved
   }, [authResolved])
   useEffect(() => {
-    statusRef.current = status
-  }, [status])
-  useEffect(() => {
     currentDirRef.current = currentDir
   }, [currentDir])
-  useEffect(() => {
-    activeShareIdRef.current = activeShareId
-  }, [activeShareId])
-  useEffect(() => {
-    shareDirRef.current = shareDir
-  }, [shareDir])
-  useEffect(() => {
-    sharesRef.current = shares
-  }, [shares])
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
@@ -276,109 +248,37 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [askDialog]
   )
 
-  const openInviteModal = useCallback((state: Omit<InviteModalState, 'open'>) => {
-    setInviteModal({ ...state, open: true })
-  }, [])
-
-  const closeInviteModal = useCallback(() => setInviteModal(closedInvite), [])
-
-  const copyClipboard = useCallback(
-    async (text: string) => {
-      try {
-        const bridge = window.bridge
-        if (bridge && typeof bridge.writeClipboard === 'function') {
-          await bridge.writeClipboard(text)
-          showToast('Copied')
-          return
-        }
-      } catch {
-        // bridge failed, fall through to execCommand
-      }
-      try {
-        const textarea = document.createElement('textarea')
-        textarea.value = text
-        textarea.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
-        document.body.appendChild(textarea)
-        textarea.focus()
-        textarea.select()
-        document.execCommand('copy')
-        document.body.removeChild(textarea)
-        showToast('Copied')
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Copy failed')
-      }
-    },
-    [showToast]
-  )
-
   const refreshFiles = useCallback(async () => {
+    const requestId = ++listRequestId.current
     const dir = currentDirRef.current
     const list = await rpc<DriveEntry[]>('list', { dir })
+    if (requestId !== listRequestId.current) return
     setEntries(list)
   }, [])
 
-  const refreshShareFiles = useCallback(async () => {
-    const id = activeShareIdRef.current
-    if (!id) return
-    const list = await rpc<DriveEntry[]>('listShareFiles', { id, dir: shareDirRef.current })
-    setShareEntries(list)
+  const showDetail = useCallback(async (path: string) => {
+    const requestId = ++detailRequestId.current
+    setDetailOpen(true)
+    setDetailName(path.split('/').filter(Boolean).pop() || path)
+    setChunkList('Loading…')
+    setSelectedEntry({ path, source: 'vault' })
+    try {
+      const manifest = await rpc<ChunkManifest>('getChunkManifest', { path })
+      if (requestId !== detailRequestId.current) return
+      setDetailMeta(`${formatBytes(manifest.byteLength)} · ${manifest.chunks.length} chunks`)
+      setChunkList(
+        manifest.chunks
+          .map((c) => `#${c.index}  ${c.hash}\n  offset=${c.offset}  len=${c.length}`)
+          .join('\n\n')
+      )
+      setSelectedEntry({ path, source: 'vault', manifest })
+    } catch (err) {
+      if (requestId !== detailRequestId.current) return
+      setSelectedEntry(null)
+      setDetailMeta(err instanceof Error ? err.message : String(err))
+      setChunkList('')
+    }
   }, [])
-
-  const refreshShares = useCallback(async () => {
-    const list = await rpc<ShareInfo[]>('listShares')
-    setShares(list)
-    setStatus((s) => ({ ...s, shares: list }))
-    setActiveShareId(null)
-    setShareEntries([])
-  }, [])
-
-  const openShare = useCallback(
-    async (share: ShareInfo) => {
-      setActiveShareId(share.id)
-      setShareDirState(share.pathPrefix || '/')
-      shareDirRef.current = share.pathPrefix || '/'
-      activeShareIdRef.current = share.id
-      await refreshShareFiles()
-    },
-    [refreshShareFiles]
-  )
-
-  const closeShare = useCallback(() => {
-    setActiveShareId(null)
-    refreshShares().catch((err) => showToast(err.message))
-  }, [refreshShares, showToast])
-
-  const showDetail = useCallback(
-    async (path: string, shareId: string | null = null) => {
-      const requestId = ++detailRequestId.current
-      setDetailOpen(true)
-      setDetailName(path.split('/').filter(Boolean).pop() || path)
-      setChunkList('Loading…')
-      try {
-        const manifest = shareId
-          ? await rpc<ChunkManifest>('getShareManifest', { id: shareId, path })
-          : await rpc<ChunkManifest>('getChunkManifest', { path })
-        if (requestId !== detailRequestId.current) return
-        setDetailMeta(`${formatBytes(manifest.byteLength)} · ${manifest.chunks.length} chunks`)
-        setChunkList(
-          manifest.chunks
-            .map((c) => `#${c.index}  ${c.hash}\n  offset=${c.offset}  len=${c.length}`)
-            .join('\n\n')
-        )
-        setSelectedEntry({
-          path,
-          source: shareId ? 'share' : 'vault',
-          shareId,
-          manifest
-        })
-      } catch (err) {
-        if (requestId !== detailRequestId.current) return
-        setDetailMeta(err instanceof Error ? err.message : String(err))
-        setChunkList('')
-      }
-    },
-    []
-  )
 
   const closeDetail = useCallback(() => {
     detailRequestId.current += 1
@@ -394,41 +294,40 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         await refreshFiles()
         return
       }
-      setSelectedEntry({ ...entry, source: 'vault' })
       await showDetail(entry.path)
     },
     [refreshFiles, showDetail]
   )
 
   const uploadPaths = useCallback(async () => {
-    const bridge = getBridge()
-    const paths = await bridge.chooseUploadFiles()
-    if (!paths || !paths.length) return
+    const paths = await getBridge().chooseUploadFiles()
+    if (!paths?.length) return
     for (const localPath of paths) {
-      const fileName = localPath.split(/[/\\]/).filter(Boolean).pop() || 'file'
+      const fileName = fileBaseName(localPath)
       const destPath = joinPath(currentDirRef.current, fileName)
       showToast('Uploading ' + fileName + '…')
-      await rpc('upload', { localPath, destPath, mime: null })
+      await rpc('upload', { localPath, destPath, mime: null }, LONG_RPC_TIMEOUT_MS)
     }
     showToast('Upload complete')
     await refreshFiles()
   }, [refreshFiles, showToast])
 
   const uploadFiles = useCallback(
-    async (fileList: FileList | File[], { share = false } = {}) => {
+    async (fileList: FileList | File[]) => {
       const bridge = getBridge()
       const files = [...fileList]
       if (!files.length) return
       for (const file of files) {
+        const fileName = fileBaseName(file.name)
         let localPath = bridge.getPathForFile(file)
         if (!localPath) {
           const nativePaths = await bridge.chooseUploadFiles()
-          if (!nativePaths || !nativePaths.length) return
+          if (!nativePaths?.length) continue
           localPath = nativePaths[0]
         }
-        const destPath = joinPath(currentDirRef.current, file.name)
-        showToast('Uploading ' + file.name + '…')
-        await rpc('upload', { localPath, destPath, mime: file.type || null })
+        const destPath = joinPath(currentDirRef.current, fileName)
+        showToast('Uploading ' + fileName + '…')
+        await rpc('upload', { localPath, destPath, mime: file.type || null }, LONG_RPC_TIMEOUT_MS)
       }
       showToast('Upload complete')
       await refreshFiles()
@@ -442,11 +341,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       setDetailOpen(false)
       if (name === 'files') {
         refreshFiles().catch((err) => showToast(err.message))
-      } else if (name === 'shared') {
-        refreshShares().catch((err) => showToast(err.message))
       }
     },
-    [refreshFiles, refreshShares, showToast]
+    [refreshFiles, showToast]
   )
 
   const showApp = useCallback(
@@ -464,10 +361,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const resolveAuth = useCallback(
     (unlocked: boolean, nextStatus: AppStatus | null = null) => {
       setAuthResolved(true)
-      if (nextStatus) {
-        setStatus(nextStatus)
-        if (nextStatus.shares) setShares(nextStatus.shares)
-      }
+      if (nextStatus) setStatus(nextStatus)
       if (unlocked) {
         showApp(nextStatus)
         return
@@ -477,12 +371,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     },
     [showApp]
   )
-
-  const showAuthHome = useCallback(() => {
-    setView('auth')
-    setAuthFlowActive(false)
-    setAuthPanel(authResolvedRef.current ? 'home' : 'boot')
-  }, [])
 
   const createAccount = useCallback(async () => {
     setAuthFlowActive(true)
@@ -530,7 +418,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setView('auth')
     setAuthPanel('home')
     setEntries([])
-    setShares([])
     closeDetail()
   }, [closeDetail])
 
@@ -555,78 +442,58 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [refreshFiles]
   )
 
-  const createReadShare = useCallback(async () => {
-    const res = await rpc<{ invite: string }>('createReadShare', {
-      pathPrefix: currentDirRef.current
-    })
-    openInviteModal({
-      title: 'Read-only share',
-      body:
-        `Invite for ${currentDirRef.current}. The app highlights this folder, but the invite currently ` +
-        `grants read access to the whole encrypted drive until subtree shares land. Treat it as sensitive.`,
-      invite: res.invite
-    })
-  }, [openInviteModal])
-
-  const createCollabShare = useCallback(
-    async (name: string) => {
-      const res = await rpc<{ invite: string }>('createCollabShare', {
-        name: assertEntryName(name || 'Shared folder')
-      })
-      openInviteModal({
-        title: 'Collaborative invite',
-        body: 'Anyone with this invite can read and write the shared folder.',
-        invite: res.invite
-      })
-      await refreshShares()
-    },
-    [openInviteModal, refreshShares]
-  )
-
-  const joinShare = useCallback(
-    async (invite: string) => {
-      await rpc('joinShare', { invite })
-      showToast('Joined share')
-      await refreshShares()
-    },
-    [refreshShares, showToast]
-  )
-
-  const [previewModal, setPreviewModal] = useState<{
-    open: boolean
-    name: string
-    url: string | null
-    mime: string | null
-    content: string | null
-    error: string | null
-  }>({ open: false, name: '', url: null, mime: null, content: null, error: null })
-
   const closePreviewModal = useCallback(() => {
-    setPreviewModal((p) => {
-      if (p.url) URL.revokeObjectURL(p.url)
-      return { open: false, name: '', url: null, mime: null, content: null, error: null }
+    setPreviewModal((prev) => {
+      if (prev.url) URL.revokeObjectURL(prev.url)
+      return closedPreview
     })
   }, [])
+
+  const downloadSelected = useCallback(async () => {
+    if (!selectedEntry) return
+    const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'download'
+    const dest = await getBridge().chooseDownloadPath(name)
+    if (!dest) return
+    const result = await rpc<{ verified?: boolean }>(
+      'download',
+      { path: selectedEntry.path, destLocalPath: dest },
+      LONG_RPC_TIMEOUT_MS
+    )
+    if (result?.verified === false) showToast('Downloaded, but chunk hashes did not match')
+    else showToast('Downloaded')
+  }, [selectedEntry, showToast])
 
   const previewSelected = useCallback(async () => {
     if (!selectedEntry) return
     const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'file'
     showToast('Fetching chunks from network peers…')
-    setPreviewModal({ open: true, name, url: null, mime: null, content: null, error: null })
+    setPreviewModal({ ...closedPreview, open: true, name })
     try {
-      const mime = selectedEntry.manifest?.mime || null
-      // Request file download/reassembly from network peers
-      const dest = await getBridge().chooseDownloadPath(name)
-      if (!dest) {
+      const result = await rpc<FilePreviewResult>(
+        'previewFile',
+        { path: selectedEntry.path },
+        LONG_RPC_TIMEOUT_MS
+      )
+      if (result.tooLarge) {
         closePreviewModal()
+        showToast('File too large to preview — choose a download location')
+        await downloadSelected()
         return
       }
-      await rpc<{ verified?: boolean }>('download', {
-        path: selectedEntry.path,
-        destLocalPath: dest
+      const bytes = bytesFromBase64(result.bytes)
+      const mime = result.mime || 'application/octet-stream'
+      const copy = new Uint8Array(bytes.byteLength)
+      copy.set(bytes)
+      const url = URL.createObjectURL(new Blob([copy.buffer], { type: mime }))
+      setPreviewModal({
+        open: true,
+        name: result.name || name,
+        url,
+        mime,
+        content: isTextPreview(mime, result.name || name) ? new TextDecoder().decode(bytes) : null,
+        error: null
       })
-      showToast('File downloaded & verified!')
-      closePreviewModal()
+      if (result.verified === false) showToast('Previewed, but chunk hashes did not match')
     } catch (err) {
       setPreviewModal({
         open: true,
@@ -637,35 +504,16 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         error: err instanceof Error ? err.message : String(err)
       })
     }
-  }, [closePreviewModal, selectedEntry, showToast])
-
-  const downloadSelected = useCallback(async () => {
-    if (!selectedEntry) return
-    const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'download'
-    const dest = await getBridge().chooseDownloadPath(name)
-    if (!dest) return
-    const result = await rpc<{ verified?: boolean }>('download', {
-      path: selectedEntry.path,
-      destLocalPath: dest
-    })
-    if (result?.verified === false) {
-      showToast('Downloaded, but chunk hashes did not match')
-    } else {
-      showToast('Downloaded')
-    }
-  }, [selectedEntry, showToast])
+  }, [closePreviewModal, downloadSelected, selectedEntry, showToast])
 
   const deleteSelected = useCallback(async () => {
-    if (!selectedEntry || selectedEntry.source !== 'vault') {
-      showToast('Delete is only available in My Drive')
-      return
-    }
+    if (!selectedEntry) return
     const ok = await askConfirm('Delete file?', selectedEntry.path)
     if (!ok) return
     await rpc('delete', { path: selectedEntry.path })
     closeDetail()
     await refreshFiles()
-  }, [askConfirm, closeDetail, refreshFiles, selectedEntry, showToast])
+  }, [askConfirm, closeDetail, refreshFiles, selectedEntry])
 
   useEffect(() => {
     askConfirmRef.current = askConfirm
@@ -677,7 +525,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     showToastRef.current = showToast
   }, [showToast])
 
-  // Subscribe on every mount; worker process starts once (Safe under React StrictMode).
   useEffect(() => {
     const bridge = getBridge()
 
@@ -691,13 +538,11 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         await bridge.applyUpdate()
         await bridge.appAfterUpdate()
       } catch (err) {
-        showToastRef.current(
-          'Update failed: ' + (err instanceof Error ? err.message : String(err))
-        )
+        showToastRef.current('Update failed: ' + (err instanceof Error ? err.message : String(err)))
       }
     }
 
-    function onWorkerMessage(data: Buffer) {
+    function onWorkerMessage(data: Uint8Array) {
       const text = decoder.decode(data)
       if (text === 'updating') {
         showToastRef.current('Downloading update…')
@@ -733,10 +578,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         if (msg.name === 'status') {
           const data = msg.data as Partial<AppStatus>
           setStatus((s) => ({ ...s, ...data }))
-          // Keep shell/auth view aligned if status announces unlock after boot.
-          if (data.unlocked === true && authResolvedRef.current) {
-            setView('app')
-          }
+          if (data.unlocked === true && authResolvedRef.current) setView('app')
         }
         if (msg.name === 'ready') {
           console.log('worker ready', msg.data)
@@ -760,7 +602,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       }
       restartAttempts += 1
       showToastRef.current('Backend stopped — restarting…')
-      const delay = restartAttempts * 500
       setTimeout(() => {
         ensureWorkerStarted()
           .then(() => rpc<AppStatus>('getStatus'))
@@ -774,7 +615,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
             setAuthPanel('home')
             showToastRef.current('Backend stopped — restart the app')
           })
-      }, delay)
+      }, restartAttempts * 500)
     })
 
     let cancelled = false
@@ -782,7 +623,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       try {
         await ensureWorkerStarted()
         if (cancelled) return
-        // getStatus waits for auto-unlock in the worker — no fragile timeout fallback.
         const s = await rpc<AppStatus>('getStatus')
         if (cancelled) return
         setStatus((prev) => ({ ...prev, ...s }))
@@ -804,11 +644,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const activeShare = useMemo(
-    () => shares.find((s) => s.id === activeShareId) || null,
-    [shares, activeShareId]
-  )
-
   const value = useMemo<DriveContextValue>(
     () => ({
       status,
@@ -819,18 +654,12 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       currentNav,
       currentDir,
       entries,
-      shares,
-      activeShareId,
-      shareDir,
-      shareEntries,
-      activeShare,
       selectedEntry,
       detailOpen,
       detailName,
       detailMeta,
       chunkList,
       toast,
-      inviteModal,
       prompt,
       dragging,
       setDragging,
@@ -840,17 +669,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       setAuthFlowActive,
       navigate,
       refreshFiles,
-      refreshShares,
-      refreshShareFiles,
-      openShare,
-      closeShare,
       setCurrentDir: (dir: string) => {
         setCurrentDirState(dir)
         currentDirRef.current = dir
-      },
-      setShareDir: (dir: string) => {
-        setShareDirState(dir)
-        shareDirRef.current = dir
       },
       onEntryClick,
       showDetail,
@@ -861,25 +682,18 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       askText,
       askConfirm,
       closePrompt,
-      openInviteModal,
-      closeInviteModal,
       resolveAuth,
-      showAuthHome,
       createAccount,
       confirmCreateAccount,
       unlock,
       logout,
       saveBlindPeers,
       mkdir,
-      createReadShare,
-      createCollabShare,
-      joinShare,
       downloadSelected,
       previewSelected,
       previewModal,
       closePreviewModal,
-      deleteSelected,
-      copyClipboard
+      deleteSelected
     }),
     [
       status,
@@ -890,51 +704,38 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       currentNav,
       currentDir,
       entries,
-      shares,
-      activeShareId,
-      shareDir,
-      shareEntries,
-      activeShare,
       selectedEntry,
       detailOpen,
       detailName,
       detailMeta,
       chunkList,
       toast,
-      inviteModal,
       prompt,
       dragging,
       showToast,
       navigate,
       refreshFiles,
-      refreshShares,
-      refreshShareFiles,
-      openShare,
-      closeShare,
       onEntryClick,
       showDetail,
       closeDetail,
+      uploadPaths,
       uploadFiles,
       askDialog,
       askText,
       askConfirm,
       closePrompt,
-      openInviteModal,
-      closeInviteModal,
       resolveAuth,
-      showAuthHome,
       createAccount,
       confirmCreateAccount,
       unlock,
       logout,
       saveBlindPeers,
       mkdir,
-      createReadShare,
-      createCollabShare,
-      joinShare,
       downloadSelected,
-      deleteSelected,
-      copyClipboard
+      previewSelected,
+      previewModal,
+      closePreviewModal,
+      deleteSelected
     ]
   )
 

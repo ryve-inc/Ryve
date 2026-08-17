@@ -25,26 +25,26 @@ export function AuthUnlockPage() {
 
   return (
     <form
-      className="auth-panel"
+      className='auth-panel'
       onSubmit={(e) => {
         e.preventDefault()
         submit()
       }}
     >
-      <div className="iris-wash -mx-6 -mt-6 rounded-t-3xl px-6 py-4">
-        <p className="meta-label m-0 text-leaf">Access</p>
-        <h2 className="display-heading m-0 mt-1 text-[24px]">Unlock</h2>
+      <div className='iris-wash -mx-6 -mt-6 rounded-t-3xl px-6 py-4'>
+        <p className='meta-label m-0 text-leaf'>Access</p>
+        <h2 className='display-heading m-0 mt-1 text-[24px]'>Unlock</h2>
       </div>
-      <p className="m-0 text-sm text-mute">Enter the 24-word recovery key for this drive.</p>
-      <div className="grid gap-2">
-        <Label htmlFor="mnemonic-unlock" className="sr-only">
+      <p className='m-0 text-sm text-mute'>Enter the 24-word recovery key for this drive.</p>
+      <div className='grid gap-2'>
+        <Label htmlFor='mnemonic-unlock' className='sr-only'>
           Recovery key
         </Label>
         <Textarea
-          id="mnemonic-unlock"
+          id='mnemonic-unlock'
           rows={4}
           autoFocus
-          placeholder="word1 word2 … word24"
+          placeholder='word1 word2 … word24'
           value={mnemonic}
           onChange={(e) => setMnemonic(e.target.value)}
           onKeyDown={(e) => {
@@ -55,8 +55,8 @@ export function AuthUnlockPage() {
           }}
         />
       </div>
-      {error ? <p className="m-0 font-mono text-sm text-danger">{error}</p> : null}
-      <div className="flex flex-wrap gap-2">
+      {error ? <p className='m-0 font-mono text-sm text-danger'>{error}</p> : null}
+      <div className='flex flex-wrap gap-2'>
         <UnlockBackButton />
         <UnlockSubmitButton busy={busy} />
       </div>

@@ -11,8 +11,8 @@ export function PromptChoiceButton({ choice }: Props) {
 
   return (
     <Button
-      variant="ghost"
-      className="w-full justify-start text-left"
+      variant='ghost'
+      className='w-full justify-start text-left'
       onClick={() => closePrompt(choice.value)}
     >
       {choice.label}

@@ -6,8 +6,8 @@ export function UnlockBackButton() {
 
   return (
     <Button
-      type="button"
-      variant="ghost"
+      type='button'
+      variant='ghost'
       onClick={() => {
         setAuthFlowActive(false)
         setAuthPanel('home')

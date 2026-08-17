@@ -1,23 +1,40 @@
-// @ts-nocheck
+import type { FaultToleranceStatus } from '../../shared/types.ts'
 import { DEFAULT_EC_K, DEFAULT_EC_M } from './rs-instance'
-import type { ChunkPlacementResult, FaultToleranceStatus } from './types'
+import type { ChunkPlacementResult, EncodedShard } from './types'
 
-/**
- * Distributes N chunks (Data + Parity) across P online peers by interleaving
- * data and parity chunks in a single round-robin pass to maximize peer diversity.
- *
- * Explicitly evaluates maxChunksPerPeer against parity budget M to flag
- * single-point-of-failure risk states.
- */
+export function computeFaultTolerance(
+  peerShardIndexes: Array<Set<number>>,
+  k: number
+): FaultToleranceStatus {
+  const unique = new Set<number>()
+  for (const shards of peerShardIndexes) {
+    for (const index of shards) unique.add(index)
+  }
+  if (unique.size < k) return 'none'
+
+  for (let drop = 0; drop < peerShardIndexes.length; drop++) {
+    const remaining = new Set<number>()
+    for (let i = 0; i < peerShardIndexes.length; i++) {
+      if (i === drop) continue
+      for (const index of peerShardIndexes[i]) remaining.add(index)
+    }
+    if (remaining.size < k) return 'degraded'
+  }
+  return 'full'
+}
+
 export function allocateChunksToPeers(
-  chunks: Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }>,
-  peers: any[],
+  chunks: EncodedShard[],
+  peers: unknown[],
   K: number = DEFAULT_EC_K,
   M: number = DEFAULT_EC_M
 ): ChunkPlacementResult {
   const N = chunks.length
+  if (N !== K + M) {
+    throw new Error(`Expected ${K + M} chunks (K=${K}, M=${M}), got ${N}`)
+  }
   const P = peers.length
-  const distribution = new Map<any, any[]>()
+  const distribution = new Map<unknown, EncodedShard[]>()
   const warnings: string[] = []
 
   for (const peer of peers) {
@@ -26,30 +43,23 @@ export function allocateChunksToPeers(
 
   if (P === 0) {
     warnings.push('No online peers connected. File stored in local cache only.')
-    return {
-      distribution,
-      faultTolerance: 'none',
-      warnings,
-      maxChunksPerPeer: N
-    }
+    return { distribution, faultTolerance: 'none', warnings, maxChunksPerPeer: N }
   }
 
   if (P === 1) {
     distribution.get(peers[0])!.push(...chunks)
-    warnings.push('Only 1 peer online. Remote fault tolerance is NONE. File relies on local cache.')
+    warnings.push('Only 1 peer online. Remote copies depend on that peer remaining available.')
     return {
       distribution,
-      faultTolerance: 'none',
+      faultTolerance: computeFaultTolerance([new Set(chunks.map((c) => c.index))], K),
       warnings,
       maxChunksPerPeer: N
     }
   }
 
-  // Interleave data and parity chunks before round-robin distribution
   const dataChunks = chunks.filter((c) => !c.isParity)
   const parityChunks = chunks.filter((c) => c.isParity)
-
-  const interleaved: typeof chunks = []
+  const interleaved: EncodedShard[] = []
   const maxLen = Math.max(dataChunks.length, parityChunks.length)
   for (let i = 0; i < maxLen; i++) {
     if (i < dataChunks.length) interleaved.push(dataChunks[i])
@@ -57,44 +67,40 @@ export function allocateChunksToPeers(
   }
 
   if (P === 2) {
-    // For 2 peers, assign exactly K=4 interleaved chunks to each peer with sliding offset
-    // Peer 0 gets chunks 0..K-1, Peer 1 gets chunks 2..K+1
     const targetPerPeer = K
     const step = Math.floor(N / P)
     peers.forEach((peer, pIdx) => {
       const peerList = distribution.get(peer)!
       const startOffset = (pIdx * step) % N
       for (let i = 0; i < targetPerPeer; i++) {
-        const chunkIndex = (startOffset + i) % N
-        const chunk = interleaved[chunkIndex]
+        const chunk = interleaved[(startOffset + i) % N]
         if (!peerList.some((c) => c.index === chunk.index)) {
           peerList.push(chunk)
         }
       }
     })
   } else {
-    // For P >= 3, standard interleaved round-robin distribution (N / P chunks per peer)
     interleaved.forEach((chunk, i) => {
-      const peerIndex = i % P
-      distribution.get(peers[peerIndex])!.push(chunk)
+      distribution.get(peers[i % P])!.push(chunk)
     })
   }
 
-  const maxChunksPerPeer = Math.max(...Array.from(distribution.values()).map((list) => list.length))
-
-  let faultTolerance: FaultToleranceStatus = 'full'
+  const lengths = Array.from(distribution.values()).map((list) => list.length)
+  const maxChunksPerPeer = lengths.length ? Math.max(...lengths) : 0
+  const planned = computeFaultTolerance(
+    peers.map((peer) => new Set((distribution.get(peer) || []).map((c) => c.index))),
+    K
+  )
 
   if (P >= 3) {
-    faultTolerance = 'full'
-    warnings.push(`FULL: Distributed across ${P} peers (${maxChunksPerPeer} chunks/peer). 1-peer drop is 100% safe.`)
-  } else if (P === 2) {
-    faultTolerance = 'degraded'
-    warnings.push(`DEGRADED: Distributed 4 chunks per peer across 2 peers. 1-peer drop is 100% safe (saved 33% bandwidth).`)
+    warnings.push(`Planned distribution across ${P} peers (${maxChunksPerPeer} chunks/peer).`)
+  } else {
+    warnings.push(`Planned 2-peer overlap (${maxChunksPerPeer} chunks/peer).`)
   }
 
   return {
     distribution,
-    faultTolerance,
+    faultTolerance: planned,
     warnings,
     maxChunksPerPeer
   }

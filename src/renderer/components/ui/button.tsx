@@ -10,15 +10,11 @@ const buttonVariants = cva(
       variant: {
         default:
           'border border-transparent bg-leaf text-soil shadow-[0_6px_18px_rgba(198,242,78,0.28)] hover:brightness-110',
-        secondary:
-          'border border-line bg-fern text-soft hover:border-cyan/40 hover:text-ink',
-        ghost:
-          'border border-transparent bg-transparent text-mute hover:bg-fern/70 hover:text-ink',
+        secondary: 'border border-line bg-fern text-soft hover:border-cyan/40 hover:text-ink',
+        ghost: 'border border-transparent bg-transparent text-mute hover:bg-fern/70 hover:text-ink',
         link: 'border-0 bg-transparent px-0 py-1 text-mute hover:text-leaf',
-        destructive:
-          'border border-danger/40 bg-danger/10 text-[#ffb0b0] hover:bg-danger/20',
-        outline:
-          'border border-line bg-moss text-soft hover:border-leaf/40 hover:text-ink'
+        destructive: 'border border-danger/40 bg-danger/10 text-[#ffb0b0] hover:bg-danger/20',
+        outline: 'border border-line bg-moss text-soft hover:border-leaf/40 hover:text-ink'
       },
       size: {
         default: 'h-10 px-5 py-2.5',
@@ -35,8 +31,7 @@ const buttonVariants = cva(
 )
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {
   asChild?: boolean
 }
 

@@ -214,7 +214,12 @@
   }
 
   .iris-wash {
-    background: linear-gradient(90deg, rgb(124 108 255 / 0.2), rgb(124 108 255 / 0.05), transparent);
+    background: linear-gradient(
+      90deg,
+      rgb(124 108 255 / 0.2),
+      rgb(124 108 255 / 0.05),
+      transparent
+    );
   }
 
   .status-dot {

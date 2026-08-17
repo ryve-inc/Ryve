@@ -23,7 +23,7 @@ export function PromptDialog() {
 
   return (
     <Dialog open={prompt.open} onOpenChange={(open) => !open && closePrompt(null)}>
-      <DialogContent className="max-w-[420px]">
+      <DialogContent className='max-w-[420px]'>
         <DialogHeader>
           <DialogTitle>{prompt.title}</DialogTitle>
           {prompt.body ? <DialogDescription>{prompt.body}</DialogDescription> : null}
@@ -47,7 +47,7 @@ export function PromptDialog() {
         ) : null}
 
         {prompt.mode === 'choice' ? (
-          <div className="grid gap-2">
+          <div className='grid gap-2'>
             {prompt.choices.map((choice) => (
               <PromptChoiceButton key={choice.value} choice={choice} />
             ))}

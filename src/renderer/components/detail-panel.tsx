@@ -4,27 +4,35 @@ import { DownloadButton } from '@/components/buttons/download-button'
 import { useDrive } from '@/context/drive-context'
 
 export function DetailPanel() {
-  const { detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
+  const {
+    detailOpen,
+    detailName,
+    detailMeta,
+    chunkList,
+    selectedEntry,
+    previewSelected,
+    showToast
+  } = useDrive()
   if (!detailOpen) return null
 
   return (
-    <aside className="flex w-[min(360px,40vw)] flex-col gap-3 overflow-auto border-l border-line bg-moss/90 p-4 backdrop-blur-xl">
+    <aside className='flex w-[min(360px,40vw)] flex-col gap-3 overflow-auto border-l border-line bg-moss/90 p-4 backdrop-blur-xl'>
       <DetailCloseButton />
-      <h2 className="display-heading m-0 text-2xl">{detailName}</h2>
-      <p className="m-0 font-mono text-sm text-mute">{detailMeta}</p>
-      <h3 className="meta-label m-0 text-leaf">Chunk hashes</h3>
-      <div className="max-h-70 overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-line bg-soil/60 p-3 font-mono text-[0.72rem] text-soft">
+      <h2 className='display-heading m-0 text-2xl'>{detailName}</h2>
+      <p className='m-0 font-mono text-sm text-mute'>{detailMeta}</p>
+      <h3 className='meta-label m-0 text-leaf'>Chunk hashes</h3>
+      <div className='max-h-70 overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-line bg-soil/60 p-3 font-mono text-[0.72rem] text-soft'>
         {chunkList}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className='flex flex-wrap gap-2'>
         <button
           onClick={() => previewSelected().catch((err) => showToast(err.message))}
-          className="rounded-xl border border-leaf bg-leaf/10 px-4 py-2 font-mono text-xs text-leaf hover:bg-leaf/20 transition-all"
+          className='rounded-xl border border-leaf bg-leaf/10 px-4 py-2 font-mono text-xs text-leaf hover:bg-leaf/20 transition-all'
         >
           👁 View File
         </button>
         <DownloadButton />
-        {selectedEntry?.source === 'vault' ? <DeleteButton /> : null}
+        {selectedEntry ? <DeleteButton /> : null}
       </div>
     </aside>
   )

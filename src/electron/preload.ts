@@ -3,10 +3,14 @@ import type { BridgeApi } from '../shared/types.ts'
 
 const { contextBridge, ipcRenderer, webUtils } = electron
 
-function toBuffer(data: unknown) {
-  if (data === null || data === undefined || typeof data === 'number') return data as never
-  const view = data as ArrayBufferView
-  return Buffer.from(view.buffer, view.byteOffset, view.byteLength)
+function toBuffer(data: unknown): Buffer {
+  if (Buffer.isBuffer(data)) return data
+  if (data instanceof Uint8Array) return Buffer.from(data)
+  if (data instanceof ArrayBuffer) return Buffer.from(data)
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  }
+  return Buffer.from(String(data ?? ''))
 }
 
 const bridge: BridgeApi = {
@@ -35,7 +39,7 @@ const bridge: BridgeApi = {
   },
   writeWorkerIPC: (specifier, data) =>
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
-  getPathForFile: (file) => webUtils.getPathForFile(file),
+  getPathForFile: (file) => webUtils.getPathForFile(file as unknown as File),
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', String(text)),
   chooseDownloadPath: (defaultName) => ipcRenderer.invoke('dialog:savePath', defaultName),
   chooseUploadFiles: () => ipcRenderer.invoke('dialog:openFile')

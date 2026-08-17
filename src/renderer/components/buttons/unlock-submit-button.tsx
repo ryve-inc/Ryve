@@ -6,7 +6,7 @@ type Props = {
 
 export function UnlockSubmitButton({ busy }: Props) {
   return (
-    <Button type="submit" disabled={busy}>
+    <Button type='submit' disabled={busy}>
       Unlock
     </Button>
   )

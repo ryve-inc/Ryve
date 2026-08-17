@@ -6,8 +6,8 @@ export function CreateBackButton() {
 
   return (
     <Button
-      type="button"
-      variant="link"
+      type='button'
+      variant='link'
       onClick={() => {
         setAuthFlowActive(false)
         setPendingMnemonic('')

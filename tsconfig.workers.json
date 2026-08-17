@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": [
+    "src/workers/**/*.ts",
+    "src/workers/**/*.d.ts",
+    "src/shared/**/*.ts",
+    "src/shared/**/*.d.ts"
+  ]
+}

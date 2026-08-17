@@ -1,6 +1,4 @@
-// @ts-nocheck
-export * from './path-utils'
-export * from './crypto-utils'
-export * from './uploader'
-export * from './downloader'
-export * from './vault-drive'
+export { VaultDrive } from './vault-drive'
+export { normalizePath, joinPath } from './path-utils'
+export { uploadFile } from './uploader'
+export { downloadFile, previewFile } from './downloader'

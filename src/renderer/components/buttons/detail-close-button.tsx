@@ -5,7 +5,7 @@ export function DetailCloseButton() {
   const { closeDetail } = useDrive()
 
   return (
-    <Button variant="link" onClick={closeDetail}>
+    <Button variant='link' onClick={closeDetail}>
       Close
     </Button>
   )

@@ -6,7 +6,7 @@ export function DeleteButton() {
 
   return (
     <Button
-      variant="destructive"
+      variant='destructive'
       onClick={async () => {
         try {
           await deleteSelected()

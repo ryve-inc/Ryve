@@ -1,4 +1,9 @@
-import { encodeBuffer, decodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from '../src/workers/erasure-coding.js'
+import {
+  encodeBuffer,
+  decodeBuffer,
+  DEFAULT_EC_K,
+  DEFAULT_EC_M
+} from '../src/workers/erasure-coding.js'
 
 function runBenchmark(sizeMb: number) {
   const sizeBytes = sizeMb * 1024 * 1024
@@ -45,7 +50,9 @@ function runBenchmark(sizeMb: number) {
     }
   }
 
-  console.log(`[Benchmark] ${sizeMb} MB File (${encoded.shards.length} shards @ ${encoded.chunkSize} bytes):`)
+  console.log(
+    `[Benchmark] ${sizeMb} MB File (${encoded.shards.length} shards @ ${encoded.chunkSize} bytes):`
+  )
   console.log(`  - Encode Time: ${encodeTimeMs.toFixed(2)} ms`)
   console.log(`  - Decode Time (with 2 missing shards): ${decodeTimeMs.toFixed(2)} ms`)
   console.log(`  - Byte Verification: ${valid ? 'PASS' : 'FAIL'}\n`)

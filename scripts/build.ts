@@ -14,7 +14,10 @@ mkdirSync(path.join(dist, 'workers'), { recursive: true })
 mkdirSync(path.join(dist, 'electron'), { recursive: true })
 
 copyFileSync(
-  path.join(root, 'node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'),
+  path.join(
+    root,
+    'node_modules/@digitaldefiance/reed-solomon-erasure.wasm/dist/reed_solomon_erasure_bg.wasm'
+  ),
   path.join(dist, 'workers/reed_solomon_erasure_bg.wasm')
 )
 

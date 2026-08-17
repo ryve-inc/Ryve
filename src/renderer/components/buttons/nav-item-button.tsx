@@ -15,7 +15,7 @@ export function NavItemButton({ nav, children }: Props) {
 
   return (
     <Button
-      variant="ghost"
+      variant='ghost'
       className={cn(
         'w-full justify-start rounded-xl border border-transparent px-3 py-2.5 text-mute hover:bg-iris/10 hover:text-ink',
         active && 'border-iris/40 bg-iris/15 text-ink'

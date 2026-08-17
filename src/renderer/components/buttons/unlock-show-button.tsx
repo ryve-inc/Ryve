@@ -6,8 +6,8 @@ export function UnlockShowButton() {
 
   return (
     <Button
-      variant="ghost"
-      className="w-full"
+      variant='ghost'
+      className='w-full'
       onClick={() => {
         setAuthFlowActive(true)
         setAuthPanel('unlock')

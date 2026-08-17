@@ -34,7 +34,7 @@ export function CopyMnemonicButton() {
   }
 
   return (
-    <Button variant="ghost" onClick={handleCopy}>
+    <Button variant='ghost' onClick={handleCopy}>
       Copy
     </Button>
   )

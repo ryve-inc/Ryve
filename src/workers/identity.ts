@@ -114,6 +114,7 @@ export function deriveNetworkKeys(networkKeyHex: string): {
   primaryKey: Uint8Array
   encryptionKey: Uint8Array
   swarmTopic: Uint8Array
+  swarmChunkTopic: Uint8Array
   topicHex: string
   networkLink: string
 } {
@@ -121,10 +122,11 @@ export function deriveNetworkKeys(networkKeyHex: string): {
   const primaryKey = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-primary/v1'), networkKey]))
   const encryptionKey = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-encryption/v1'), networkKey]))
   const swarmTopic = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-swarm/v1'), networkKey]))
+  const swarmChunkTopic = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-chunk/v1'), networkKey]))
   const topicHex = b4a.toString(swarmTopic, 'hex')
   const networkLink = `p2p-drive://network/${networkKeyHex}`
 
-  return { primaryKey, encryptionKey, swarmTopic, topicHex, networkLink }
+  return { primaryKey, encryptionKey, swarmTopic, swarmChunkTopic, topicHex, networkLink }
 }
 
 export { createAccount, unlockFromMnemonic, publicIdentity }

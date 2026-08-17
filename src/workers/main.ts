@@ -43,13 +43,14 @@ const updaterConfig = {
 
 const pipe = new FramedStream((Bare as any).IPC)
 const pearStore = new Corestore(path.join(updaterConfig.dir, 'pear-runtime', 'corestore'))
+const updaterSwarm = new Hyperswarm()
 const swarm = new Hyperswarm()
-const pear = new PearRuntime({ ...updaterConfig, swarm, store: pearStore })
+const pear = new PearRuntime({ ...updaterConfig, swarm: updaterSwarm, store: pearStore })
 
 pear.updater.on('error', console.error)
 if (updaterConfig.updates !== false) {
-  swarm.on('connection', (connection: any) => pearStore.replicate(connection))
-  swarm.join(pear.updater.drive.core.discoveryKey, {
+  updaterSwarm.on('connection', (connection: any) => pearStore.replicate(connection))
+  updaterSwarm.join(pear.updater.drive.core.discoveryKey, {
     client: true,
     server: false
   })
@@ -73,6 +74,7 @@ interface State {
   networkLink: string | null
   topicHex: string | null
   networkDiscovery: any
+  chunkDiscovery: any
   vaultStore: any
   vault: VaultDrive | null
   chunkStore: GlobalChunkStore
@@ -90,6 +92,7 @@ const state: State = {
   networkLink: null,
   topicHex: null,
   networkDiscovery: null,
+  chunkDiscovery: null,
   vaultStore: null,
   vault: null,
   chunkStore,
@@ -106,13 +109,22 @@ function withLock<T>(fn: () => Promise<T>): Promise<T> {
   return run
 }
 
+const activeNetworkPeers = new Set<any>()
+
 swarm.on('connection', (conn: any) => {
-  state.peerCount++
-  console.log(`[Network:Swarm] Peer connected! Active Hyperswarm peers: ${state.peerCount}`)
+  if (!state.networkKeyHex) {
+    try { conn.destroy() } catch {}
+    return
+  }
+
+  activeNetworkPeers.add(conn)
+  state.peerCount = activeNetworkPeers.size
+  console.log(`[Network:Swarm] Private network peer connected! Active network peers: ${state.peerCount}`)
   emit({ type: 'event', name: 'status', data: statusPayload() })
   conn.on('close', () => {
-    state.peerCount = Math.max(0, state.peerCount - 1)
-    console.log(`[Network:Swarm] Peer disconnected. Remaining peers: ${state.peerCount}`)
+    activeNetworkPeers.delete(conn)
+    state.peerCount = activeNetworkPeers.size
+    console.log(`[Network:Swarm] Private network peer disconnected. Remaining network peers: ${state.peerCount}`)
     emit({ type: 'event', name: 'status', data: statusPayload() })
   })
   if (state.vaultStore) state.vaultStore.replicate(conn)
@@ -131,7 +143,7 @@ function statusPayload() {
     unlocked: state.unlocked,
     identity: state.identityHex,
     driveKey: state.vault?.keyHex || null,
-    peers: state.peerCount,
+    peers: state.networkKeyHex ? state.peerCount : 0,
     blindPeerKeys: state.settings.blindPeerKeys || [],
     network: {
       networkLink: state.networkLink,
@@ -155,12 +167,27 @@ async function closeVault() {
     await state.networkDiscovery.destroy().catch(() => {})
     state.networkDiscovery = null
   }
+  if (state.chunkDiscovery) {
+    await state.chunkDiscovery.destroy().catch(() => {})
+    state.chunkDiscovery = null
+  }
+  await state.chunkStore.leaveNetwork().catch(() => {})
   if (state.vault) await state.vault.close().catch(() => {})
   if (state.blinds) await state.blinds.close().catch(() => {})
   if (state.vaultStore) await state.vaultStore.close().catch(() => {})
+  
+  for (const conn of Array.from(activeNetworkPeers)) {
+    try { conn.destroy() } catch {}
+  }
+  activeNetworkPeers.clear()
+
   state.vault = null
   state.blinds = null
   state.vaultStore = null
+  state.networkKeyHex = null
+  state.networkLink = null
+  state.topicHex = null
+  state.peerCount = 0
 }
 
 async function openVault(keys: {
@@ -170,6 +197,7 @@ async function openVault(keys: {
   networkLink?: string
   topicHex?: string
   swarmTopic?: Uint8Array
+  swarmChunkTopic?: Uint8Array
 }) {
   await ensureSettings()
   await closeVault()
@@ -178,7 +206,7 @@ async function openVault(keys: {
   state.encryptionKey = keys.encryptionKey
   state.identityHex = b4a.toString(publicIdentity(keys.primaryKey), 'hex')
 
-  if (keys.networkKeyHex && keys.swarmTopic) {
+  if (keys.networkKeyHex && keys.swarmTopic && keys.swarmChunkTopic) {
     state.networkKeyHex = keys.networkKeyHex
     state.networkLink = keys.networkLink || `p2p-drive://network/${keys.networkKeyHex}`
     state.topicHex = keys.topicHex || b4a.toString(keys.swarmTopic, 'hex')
@@ -186,6 +214,11 @@ async function openVault(keys: {
     // Join Network topic on Hyperswarm
     state.networkDiscovery = swarm.join(keys.swarmTopic, { server: true, client: true })
     await state.networkDiscovery.flushed().catch(() => {})
+
+    state.chunkDiscovery = swarm.join(keys.swarmChunkTopic, { server: true, client: true })
+    await state.chunkDiscovery.flushed().catch(() => {})
+
+    await state.chunkStore.joinNetwork(keys.swarmChunkTopic)
     console.log(`[P2PNetwork] Joined network swarm topic: ${state.topicHex}`)
   }
 
@@ -196,7 +229,7 @@ async function openVault(keys: {
 
   state.blinds = createBlindClient(swarm, state.vaultStore, state.settings.blindPeerKeys)
 
-  for (const conn of swarm.connections) {
+  for (const conn of activeNetworkPeers) {
     state.vaultStore.replicate(conn)
   }
 
@@ -239,6 +272,7 @@ async function tryAutoUnlock() {
         networkKeyHex: session.networkKeyHex,
         networkLink: derived.networkLink,
         swarmTopic: derived.swarmTopic,
+        swarmChunkTopic: derived.swarmChunkTopic,
         topicHex: derived.topicHex
       }
     }
@@ -269,6 +303,7 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
       networkKeyHex,
       networkLink,
       swarmTopic: derived.swarmTopic,
+      swarmChunkTopic: derived.swarmChunkTopic,
       topicHex: derived.topicHex
     })
     return { status, networkLink, networkKeyHex }
@@ -284,6 +319,7 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
       networkKeyHex,
       networkLink: derived.networkLink,
       swarmTopic: derived.swarmTopic,
+      swarmChunkTopic: derived.swarmChunkTopic,
       topicHex: derived.topicHex
     })
     return { status, networkLink: derived.networkLink, networkKeyHex }
@@ -426,6 +462,7 @@ goodbye(async () => {
   await closeVault()
   if (state.chunkStore) await state.chunkStore.close().catch(() => {})
   await swarm.destroy()
+  await updaterSwarm.destroy().catch(() => {})
   await pear.close()
   await pearStore.close()
 })

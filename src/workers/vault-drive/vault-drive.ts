@@ -42,8 +42,6 @@ class VaultDrive {
       encryptionKey: this.encryptionKey
     })
     await this.drive.ready()
-    this._discovery = this.swarm.join(this.drive.discoveryKey, { server: true, client: true })
-    await this._discovery.flushed()
     return this
   }
 

@@ -7,39 +7,47 @@ import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-co
 import { setupConnectionRpc } from './rpc-handler'
 import type { GlobalChunkStoreOptions } from './types'
 
-const CHUNK_POOL_TOPIC = 'p2cloud:chunk-pool-v2'
-
 class GlobalChunkStore {
   swarm: any
   storageDir: string
   cacheDir: string
-  topic: Uint8Array
+  topic: Uint8Array | null
   discovery: any
 
   constructor({ swarm, storageDir }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
-    this.topic = hypercoreCrypto.hash(b4a.from(CHUNK_POOL_TOPIC))
+    this.topic = null
     this.discovery = null
     this._onConnection = this._onConnection.bind(this)
   }
 
   async init() {
     await fs.promises.mkdir(this.cacheDir, { recursive: true })
-
     this.swarm.on('connection', this._onConnection)
     for (const conn of this.swarm.connections) {
       this._onConnection(conn)
     }
+  }
 
+  async joinNetwork(swarmChunkTopic: Uint8Array) {
+    await this.leaveNetwork()
+    this.topic = swarmChunkTopic
     this.discovery = this.swarm.join(this.topic, {
       server: true,
       client: true
     })
+    await this.discovery.flushed().catch(() => {})
+    console.log('[ChunkStore] Joined private network chunk topic')
+  }
 
-    await this.discovery.flushed()
-    console.log('[ChunkStore] Joined global chunk network pool on topic:', CHUNK_POOL_TOPIC)
+  async leaveNetwork() {
+    if (this.discovery) {
+      await this.discovery.destroy().catch(() => {})
+      this.discovery = null
+    }
+    this.topic = null
   }
 
   _onConnection(conn: any) {
@@ -153,12 +161,9 @@ class GlobalChunkStore {
 
   async close() {
     this.swarm.off('connection', this._onConnection)
-    if (this.discovery) {
-      await this.discovery.destroy().catch(() => {})
-      this.discovery = null
-    }
+    await this.leaveNetwork()
   }
 }
 
-export { GlobalChunkStore, CHUNK_POOL_TOPIC }
+export { GlobalChunkStore }
 

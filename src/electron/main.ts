@@ -36,7 +36,8 @@ const cmd = command(
 
 cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
 
-const pearStore = cmd.flags.storage as string | undefined
+const rawPearStore = cmd.flags.storage as string | undefined
+const pearStore = rawPearStore ? path.resolve(rawPearStore) : undefined
 const updates = cmd.flags.updates
 
 if (pearStore) app.setPath('userData', pearStore)

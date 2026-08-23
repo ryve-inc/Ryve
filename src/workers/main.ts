@@ -295,11 +295,19 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
   },
 
   async createNetwork() {
+    let primaryKey = state.primaryKey
+    let encryptionKey = state.encryptionKey
+    if (!primaryKey || !encryptionKey) {
+      const acct = createAccount()
+      primaryKey = acct.primaryKey
+      encryptionKey = acct.encryptionKey
+    }
+
     const { networkKeyHex, networkLink } = createNetworkKey()
     const derived = deriveNetworkKeys(networkKeyHex)
     const status = await openVault({
-      primaryKey: derived.primaryKey,
-      encryptionKey: derived.encryptionKey,
+      primaryKey,
+      encryptionKey,
       networkKeyHex,
       networkLink,
       swarmTopic: derived.swarmTopic,
@@ -311,11 +319,19 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
 
   async joinNetwork({ link }: { link: string }) {
     if (!link) throw new Error('Enter a valid network invite link.')
+    let primaryKey = state.primaryKey
+    let encryptionKey = state.encryptionKey
+    if (!primaryKey || !encryptionKey) {
+      const acct = createAccount()
+      primaryKey = acct.primaryKey
+      encryptionKey = acct.encryptionKey
+    }
+
     const networkKeyHex = parseNetworkLink(link)
     const derived = deriveNetworkKeys(networkKeyHex)
     const status = await openVault({
-      primaryKey: derived.primaryKey,
-      encryptionKey: derived.encryptionKey,
+      primaryKey,
+      encryptionKey,
       networkKeyHex,
       networkLink: derived.networkLink,
       swarmTopic: derived.swarmTopic,

@@ -60,12 +60,10 @@ export async function uploadFile({
     })
   }
 
-  // 3. Offload chunks to network peers in global chunk store
-  // For Public files (!isPrivate), keep local copy on uploader for seeding.
-  // For Private files (isPrivate), purge local chunks from uploader.
+  // 3. Offload chunks to network nodes (distributed equally across uploader and peers)
   let allocation = null
   if (chunkStore) {
-    allocation = await chunkStore.offloadChunks(chunks, DEFAULT_EC_K, DEFAULT_EC_M, !isPrivate)
+    allocation = await chunkStore.offloadChunks(chunks, DEFAULT_EC_K, DEFAULT_EC_M)
   }
 
   // 4. Save metadata index in drive (tiny record)

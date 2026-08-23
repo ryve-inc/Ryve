@@ -114,35 +114,24 @@ class GlobalChunkStore {
   }
 
   /**
-   * Erasure Coding chunk offloading using dynamic peer-aware allocation.
+   * Helper function to send allocated chunks over RPC to remote peers,
+   * retain self-assigned chunks locally, and purge unassigned local chunk files.
    */
-  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, keepLocalCopy = false) {
-    // Save all chunks to local peer cache first for self-hosting / local fallback
-    for (const chunk of chunkList) {
-      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
-    }
-
-    const peers = Array.from(this.swarm.connections)
-    const allocation = allocateChunksToPeers(chunkList, peers, K, M)
-
-    if (allocation.warnings.length > 0) {
-      for (const warn of allocation.warnings) {
-        console.warn(`[ChunkStore:Uploader] ${warn}`)
-      }
-    }
-
-    if (peers.length === 0) {
-      console.log('[ChunkStore:Uploader] No online peers connected. Cached chunks locally.')
-      return allocation
-    }
-
+  async _distributeAndPruneChunks(chunkList: any[], allocation: any) {
     const offloadedHashes = new Set<string>()
+    const selfAssignedHashes = new Set<string>()
 
-    // Send allocated chunks to respective peers over connection sockets via RPC
-    for (const [conn, peerChunks] of allocation.distribution.entries()) {
-      const rpc = (conn as any)._chunkRpc
+    for (const [node, peerChunks] of allocation.distribution.entries()) {
+      if ((node as any)?.isSelf) {
+        for (const chunk of peerChunks) {
+          selfAssignedHashes.add(chunk.hash)
+        }
+        continue
+      }
+
+      const rpc = (node as any)._chunkRpc
       if (!rpc || rpc.closed) continue
+
       for (const chunk of peerChunks) {
         try {
           await rpc.request('store-chunk', {
@@ -156,21 +145,45 @@ class GlobalChunkStore {
       }
     }
 
-    // For private files (keepLocalCopy === false), purge successfully offloaded chunks from local storage to save space.
-    // For public files (keepLocalCopy === true), retain local chunks so uploader serves as an active seed.
-    if (!keepLocalCopy) {
-      for (const hash of offloadedHashes) {
-        const localPath = path.join(this.cacheDir, hash + '.bin')
+    // Purge local chunk files NOT assigned to self that were sent to remote peers or unassigned
+    let purgedCount = 0
+    for (const chunk of chunkList) {
+      if (!selfAssignedHashes.has(chunk.hash)) {
+        const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
         await fs.promises.unlink(localPath).catch(() => {})
+        purgedCount++
       }
-      console.log(
-        `[ChunkStore:Uploader] ✓ Private upload: Offloaded ${chunkList.length} chunks across ${peers.length} peers. Purged ${offloadedHashes.size} local chunk file(s).`
-      )
-    } else {
-      console.log(
-        `[ChunkStore:Uploader] ✓ Public upload: Offloaded ${chunkList.length} chunks across ${peers.length} peers. Retained local chunk copies for seeding.`
-      )
     }
+
+    console.log(
+      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across nodes (Self retained ${selfAssignedHashes.size} chunk(s), purged ${purgedCount} local chunk file(s)).`
+    )
+  }
+
+  /**
+   * Erasure Coding chunk offloading using dynamic peer-aware allocation across uploader and peers.
+   */
+  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
+    // 1. Save all chunks to local peer cache first
+    for (const chunk of chunkList) {
+      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+      await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
+    }
+
+    const selfNode = { isSelf: true }
+    const remotePeers = Array.from(this.swarm.connections)
+    const nodes = [selfNode, ...remotePeers]
+
+    const allocation = allocateChunksToPeers(chunkList, nodes, K, M)
+
+    if (allocation.warnings.length > 0) {
+      for (const warn of allocation.warnings) {
+        console.warn(`[ChunkStore:Uploader] ${warn}`)
+      }
+    }
+
+    // 2. Distribute chunks to remote peers via RPC & prune unassigned local chunk files
+    await this._distributeAndPruneChunks(chunkList, allocation)
 
     return allocation
   }

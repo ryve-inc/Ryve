@@ -2,7 +2,7 @@ import path from 'bare-path'
 import fs from 'bare-fs'
 import b4a from 'b4a'
 
-import { decodeBuffer } from '../erasure-coding'
+import { decodeBuffer, encodeBuffer } from '../erasure-coding'
 import { normalizePath } from './path-utils'
 import { decryptBuffer, hashChunk } from './crypto-utils'
 
@@ -32,9 +32,9 @@ export async function downloadFile({
   console.log(`[User:Download] Reassembling chunks for ${p}...`)
 
   let encryptedBuffer: Uint8Array
+  let missingShardsDetected = false
 
   if (meta.erasureCoding) {
-    // Erasure Coding download path: parallel query across online peers
     const { k, m, chunkSize } = meta.erasureCoding
     const totalShards = k + m
     const availableShardsMap = new Map<number, Uint8Array>()
@@ -57,7 +57,6 @@ export async function downloadFile({
       }
     })
 
-    // Wait for fetch promises
     await Promise.allSettled(fetchPromises)
 
     console.log(
@@ -70,8 +69,31 @@ export async function downloadFile({
       )
     }
 
+    if (availableShardsMap.size < totalShards) {
+      missingShardsDetected = true
+    }
+
     const encryptedSize = meta.encryptedSize || (meta.originalSize ? meta.originalSize + 16 : 0)
     encryptedBuffer = decodeBuffer(availableShardsMap, k, m, chunkSize, encryptedSize)
+
+    // Lazy On-Demand Repair: If missing shards were detected during download, re-offload missing shards
+    if (missingShardsDetected && chunkStore && chunkStore.swarm && chunkStore.swarm.connections.size > 0) {
+      console.log(`[User:Download:LazyRepair] Missing shards detected during download. Executing on-demand network healing...`)
+      try {
+        const encoded = encodeBuffer(encryptedBuffer, k, m)
+        const repairChunkList = encoded.shards.map((s) => ({
+          index: s.index,
+          isParity: s.isParity,
+          buffer: s.buffer,
+          hash: hashChunk(s.buffer)
+        }))
+        chunkStore.offloadChunks(repairChunkList, k, m).catch((err: any) => {
+          console.warn('[User:Download:LazyRepair] Lazy repair offload failed:', err?.message || err)
+        })
+      } catch (err: any) {
+        console.warn('[User:Download:LazyRepair] Error generating lazy repair shards:', err?.message || err)
+      }
+    }
   } else {
     // Legacy download path for backward compatibility
     const encryptedChunks: Uint8Array[] = []
@@ -116,4 +138,3 @@ export async function downloadFile({
 
   return { path: p, destLocalPath: finalDest, verified: true }
 }
-

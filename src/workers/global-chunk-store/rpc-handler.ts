@@ -41,4 +41,3 @@ export function setupConnectionRpc(conn: any, swarm: any, cacheDir: string) {
     console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${swarm.connections.size}`)
   })
 }
-

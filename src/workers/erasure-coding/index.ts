@@ -1,6 +1,6 @@
 export * from './types'
-export * from './rs-instance'
 export * from './allocator'
 export * from './encoder'
 export * from './decoder'
-
+export * from './at-matrix'
+export * from './gf28'

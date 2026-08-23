@@ -7,6 +7,10 @@ import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-co
 import { setupConnectionRpc } from './rpc-handler'
 import type { GlobalChunkStoreOptions } from './types'
 
+/**
+ * Stateless GlobalChunkStore for P2P chunk offloading & retrieval.
+ * Zero background daemons, zero idle CPU/RAM overhead, scale-proof.
+ */
 class GlobalChunkStore {
   swarm: any
   storageDir: string
@@ -55,7 +59,7 @@ class GlobalChunkStore {
   }
 
   /**
-   * Erasure Coding chunk offloading using allocateChunksToPeers diversity placement algorithm.
+   * Erasure Coding chunk offloading using dynamic peer-aware allocation.
    */
   async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
     // Save all chunks to local peer cache first for self-hosting / local fallback
@@ -166,4 +170,3 @@ class GlobalChunkStore {
 }
 
 export { GlobalChunkStore }
-

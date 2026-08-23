@@ -81,8 +81,10 @@ type DriveContextValue = {
   onEntryClick: (entry: DriveEntry) => Promise<void>
   showDetail: (path: string) => Promise<void>
   closeDetail: () => void
-  uploadPaths: () => Promise<void>
-  uploadFiles: (fileList: FileList | File[]) => Promise<void>
+  uploadPaths: (opts?: { isPrivate?: boolean }) => Promise<void>
+  uploadFiles: (fileList: FileList | File[], opts?: { isPrivate?: boolean }) => Promise<void>
+  switchNetwork: (id: string) => Promise<void>
+  removeNetwork: (id: string) => Promise<void>
   askDialog: (opts: {
     title: string
     body?: string
@@ -137,7 +139,9 @@ const emptyStatus: AppStatus = {
     networkLink: null,
     networkKeyHex: null,
     topicHex: null,
-    joined: false
+    joined: false,
+    activeId: null,
+    networks: []
   }
 }
 
@@ -363,22 +367,24 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     [refreshFiles, showDetail]
   )
 
-  const uploadPaths = useCallback(async () => {
+  const uploadPaths = useCallback(async (opts: { isPrivate?: boolean } = {}) => {
+    const isPrivate = opts.isPrivate !== false
     const bridge = getBridge()
     const paths = await bridge.chooseUploadFiles()
     if (!paths || !paths.length) return
     for (const localPath of paths) {
       const fileName = localPath.split(/[/\\]/).filter(Boolean).pop() || 'file'
       const destPath = joinPath(currentDirRef.current, fileName)
-      showToast('Uploading ' + fileName + '…')
-      await rpc('upload', { localPath, destPath, mime: null })
+      showToast(`Uploading ${fileName} (${isPrivate ? 'Private' : 'Public'})…`)
+      await rpc('upload', { localPath, destPath, mime: null, isPrivate })
     }
     showToast('Upload complete')
     await refreshFiles()
   }, [refreshFiles, showToast])
 
   const uploadFiles = useCallback(
-    async (fileList: FileList | File[], { share = false } = {}) => {
+    async (fileList: FileList | File[], opts: { isPrivate?: boolean } = {}) => {
+      const isPrivate = opts.isPrivate !== false
       const bridge = getBridge()
       const files = [...fileList]
       if (!files.length) return
@@ -390,8 +396,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
           localPath = nativePaths[0]
         }
         const destPath = joinPath(currentDirRef.current, file.name)
-        showToast('Uploading ' + file.name + '…')
-        await rpc('upload', { localPath, destPath, mime: file.type || null })
+        showToast(`Uploading ${file.name} (${isPrivate ? 'Private' : 'Public'})…`)
+        await rpc('upload', { localPath, destPath, mime: file.type || null, isPrivate })
       }
       showToast('Upload complete')
       await refreshFiles()
@@ -568,6 +574,34 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       }
     },
     [resolveAuth, showToast]
+  )
+
+  const switchNetwork = useCallback(
+    async (id: string) => {
+      try {
+        const next = await rpc<AppStatus>('switchNetwork', { id })
+        setStatus(next)
+        showToast('Switched Network')
+        await refreshFiles()
+      } catch (err: any) {
+        showToast(err.message || 'Failed to switch network')
+      }
+    },
+    [refreshFiles, showToast]
+  )
+
+  const removeNetwork = useCallback(
+    async (id: string) => {
+      try {
+        const next = await rpc<AppStatus>('removeNetwork', { id })
+        setStatus(next)
+        showToast('Network removed')
+        await refreshFiles()
+      } catch (err: any) {
+        showToast(err.message || 'Failed to remove network')
+      }
+    },
+    [refreshFiles, showToast]
   )
 
 
@@ -830,6 +864,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       showApp,
       createNetwork,
       joinNetwork,
+      switchNetwork,
+      removeNetwork,
       openCreateNetworkModal,
       closeCreateNetworkModal,
       openJoinNetworkModal,
@@ -885,6 +921,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       showApp,
       createNetwork,
       joinNetwork,
+      switchNetwork,
+      removeNetwork,
       openCreateNetworkModal,
       closeCreateNetworkModal,
       openJoinNetworkModal,

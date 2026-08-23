@@ -17,13 +17,22 @@ class GlobalChunkStore {
   cacheDir: string
   topic: Uint8Array | null
   discovery: any
+  publicCatalog: any
+  getNetworkKeyHex: (() => string | null) | null
 
-  constructor({ swarm, storageDir }: GlobalChunkStoreOptions) {
+  constructor({
+    swarm,
+    storageDir,
+    publicCatalog = null,
+    getNetworkKeyHex = null
+  }: GlobalChunkStoreOptions & { publicCatalog?: any; getNetworkKeyHex?: (() => string | null) | null }) {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
     this.topic = null
     this.discovery = null
+    this.publicCatalog = publicCatalog
+    this.getNetworkKeyHex = getNetworkKeyHex
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -44,6 +53,10 @@ class GlobalChunkStore {
     })
     await this.discovery.flushed().catch(() => {})
     console.log('[ChunkStore] Joined private network chunk topic')
+    if (this.getNetworkKeyHex) {
+      const netKey = this.getNetworkKeyHex()
+      if (netKey) this.syncPublicCatalog(netKey).catch(() => {})
+    }
   }
 
   async leaveNetwork() {
@@ -55,13 +68,55 @@ class GlobalChunkStore {
   }
 
   _onConnection(conn: any) {
-    setupConnectionRpc(conn, this.swarm, this.cacheDir)
+    setupConnectionRpc(
+      conn,
+      this.swarm,
+      this.cacheDir,
+      this.publicCatalog,
+      this.getNetworkKeyHex || undefined
+    )
+    if (this.getNetworkKeyHex) {
+      const netKey = this.getNetworkKeyHex()
+      if (netKey) this.syncPeerCatalog(conn, netKey).catch(() => {})
+    }
+  }
+
+  async syncPeerCatalog(conn: any, networkKeyHex: string) {
+    const rpc = (conn as any)._chunkRpc
+    if (!rpc || rpc.closed || !this.publicCatalog) return
+    try {
+      const res = await rpc.request('get-public-catalog', {}, { timeout: 10000 })
+      if (res && Array.isArray(res.manifests) && res.manifests.length > 0) {
+        await this.publicCatalog.mergeRemoteManifests(networkKeyHex, res.manifests)
+        console.log(`[PublicCatalog:Sync] Merged ${res.manifests.length} public file manifest(s) from peer`)
+      }
+    } catch {}
+  }
+
+  async syncPublicCatalog(networkKeyHex: string) {
+    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+    for (const conn of connections) {
+      await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
+    }
+  }
+
+  async broadcastPublicFile(manifest: any) {
+    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+    for (const conn of connections) {
+      const rpc = (conn as any)._chunkRpc
+      if (!rpc || rpc.closed) continue
+      try {
+        await rpc.request('announce-public-file', { manifest }, { timeout: 5000 })
+      } catch (err: any) {
+        console.warn(`[PublicCatalog:Broadcast] Failed to announce public file to peer:`, err?.message || err)
+      }
+    }
   }
 
   /**
    * Erasure Coding chunk offloading using dynamic peer-aware allocation.
    */
-  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
+  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, keepLocalCopy = false) {
     // Save all chunks to local peer cache first for self-hosting / local fallback
     for (const chunk of chunkList) {
       const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
@@ -101,15 +156,22 @@ class GlobalChunkStore {
       }
     }
 
-    // Delete successfully offloaded chunks from local storage to save space
-    for (const hash of offloadedHashes) {
-      const localPath = path.join(this.cacheDir, hash + '.bin')
-      await fs.promises.unlink(localPath).catch(() => {})
+    // For private files (keepLocalCopy === false), purge successfully offloaded chunks from local storage to save space.
+    // For public files (keepLocalCopy === true), retain local chunks so uploader serves as an active seed.
+    if (!keepLocalCopy) {
+      for (const hash of offloadedHashes) {
+        const localPath = path.join(this.cacheDir, hash + '.bin')
+        await fs.promises.unlink(localPath).catch(() => {})
+      }
+      console.log(
+        `[ChunkStore:Uploader] ✓ Private upload: Offloaded ${chunkList.length} chunks across ${peers.length} peers. Purged ${offloadedHashes.size} local chunk file(s).`
+      )
+    } else {
+      console.log(
+        `[ChunkStore:Uploader] ✓ Public upload: Offloaded ${chunkList.length} chunks across ${peers.length} peers. Retained local chunk copies for seeding.`
+      )
     }
 
-    console.log(
-      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across ${peers.length} peers (Status: ${allocation.faultTolerance}). Purged ${offloadedHashes.size} local chunk file(s).`
-    )
     return allocation
   }
 

@@ -10,6 +10,8 @@ class VaultDrive {
   store: any
   swarm: any
   encryptionKey: Uint8Array | string
+  networkKeyHex: string | null
+  publicCatalog: any
   blinds: any
   chunkStore: any
   drive: any
@@ -19,18 +21,24 @@ class VaultDrive {
     store,
     swarm,
     encryptionKey,
+    networkKeyHex = null,
+    publicCatalog = null,
     blinds = null,
     chunkStore = null
   }: {
     store: any
     swarm: any
     encryptionKey: Uint8Array | string
+    networkKeyHex?: string | null
+    publicCatalog?: any
     blinds?: any
     chunkStore?: any
   }) {
     this.store = store
     this.swarm = swarm
     this.encryptionKey = encryptionKey
+    this.networkKeyHex = networkKeyHex
+    this.publicCatalog = publicCatalog
     this.blinds = blinds
     this.chunkStore = chunkStore
     this.drive = null
@@ -73,9 +81,37 @@ class VaultDrive {
         isDirectory: exact ? !exact.value.blob && !exact.value.linkname : isNestedOnly,
         byteLength: exact?.value?.metadata?.originalSize || exact?.value?.blob?.byteLength || 0,
         metadata: exact?.value?.metadata || null,
-        chunkCount: exact?.value?.metadata?.chunks?.length || 0
+        chunkCount: exact?.value?.metadata?.chunks?.length || 0,
+        isPrivate: exact?.value?.metadata?.isPrivate !== undefined ? Boolean(exact.value.metadata.isPrivate) : true
       })
     }
+
+    // Merge public catalog files for active network
+    if (this.publicCatalog && this.networkKeyHex) {
+      try {
+        const publicFiles = await this.publicCatalog.getPublicFiles(this.networkKeyHex)
+        for (const pubFile of publicFiles) {
+          if (!pubFile || !pubFile.path) continue
+          const rest = folder === '/' ? pubFile.path.slice(1) : pubFile.path.slice(folder.length + 1)
+          if (!rest) continue
+          const name = rest.split('/')[0]
+          if (!name || name === '.keep') continue
+          const full = joinPath(folder, name)
+          if (!names.has(full)) {
+            names.set(full, {
+              path: full,
+              name,
+              isDirectory: false,
+              byteLength: pubFile.originalSize || pubFile.byteLength || 0,
+              metadata: pubFile,
+              chunkCount: pubFile.chunks?.length || 0,
+              isPrivate: false
+            })
+          }
+        }
+      } catch {}
+    }
+
     return [...names.values()].sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -91,14 +127,17 @@ class VaultDrive {
     return { path: p }
   }
 
-  async upload(localPath: string, destPath: string, mime: string | null = null) {
+  async upload(localPath: string, destPath: string, mime: string | null = null, isPrivate = true) {
     return uploadFile({
       drive: this.drive,
       chunkStore: this.chunkStore,
       encryptionKey: this.encryptionKey,
+      networkKeyHex: this.networkKeyHex,
+      publicCatalog: this.publicCatalog,
       localPath,
       destPath,
-      mime
+      mime,
+      isPrivate
     })
   }
 
@@ -107,6 +146,8 @@ class VaultDrive {
       drive: this.drive,
       chunkStore: this.chunkStore,
       encryptionKey: this.encryptionKey,
+      networkKeyHex: this.networkKeyHex,
+      publicCatalog: this.publicCatalog,
       entryPath,
       destLocalPath
     })

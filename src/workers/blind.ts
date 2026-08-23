@@ -7,6 +7,16 @@ import idEnc from 'hypercore-id-encoding'
 const SETTINGS_FILE = 'drive-settings.json'
 const SESSION_FILE = 'drive-session.json'
 const SHARES_INDEX_FILE = 'drive-shares.json'
+const NETWORKS_FILE = 'drive-networks.json'
+
+export type NetworkStorageItem = {
+  id: string
+  name: string
+  networkLink: string
+  networkKeyHex: string
+  topicHex: string
+  createdAt: number
+}
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
@@ -23,6 +33,17 @@ async function writeJson(file: string, value: unknown): Promise<void> {
   const payload = b4a.from(JSON.stringify(value, null, 2))
   await fs.promises.writeFile(tmp, payload)
   await fs.promises.rename(tmp, file)
+}
+
+async function loadNetworks(storageDir: string): Promise<NetworkStorageItem[]> {
+  const file = path.join(storageDir, NETWORKS_FILE)
+  const list = await readJson<NetworkStorageItem[]>(file, [])
+  return Array.isArray(list) ? list : []
+}
+
+async function saveNetworks(storageDir: string, networks: NetworkStorageItem[]): Promise<void> {
+  const file = path.join(storageDir, NETWORKS_FILE)
+  await writeJson(file, networks)
 }
 
 async function loadSettings(storageDir: string): Promise<{ file: string; blindPeerKeys: string[] }> {
@@ -107,6 +128,8 @@ export {
   clearSession,
   loadSharesIndex,
   saveSharesIndex,
+  loadNetworks,
+  saveNetworks,
   createBlindClient,
   normalizeBlindKeys,
   pinCore

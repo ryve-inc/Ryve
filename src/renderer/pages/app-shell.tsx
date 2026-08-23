@@ -21,7 +21,7 @@ export function AppShell() {
   const breadcrumb = currentNav === 'files' ? currentDir : 'Settings'
 
   return (
-    <section className="grid h-full grid-cols-[220px_1fr_auto]">
+    <section className="grid h-full grid-cols-[260px_1fr_auto]">
       <AppSidebar />
 
       <main className="flex min-w-0 flex-col">

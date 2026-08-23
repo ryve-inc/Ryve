@@ -18,6 +18,7 @@ import {
   deriveNetworkKeys
 } from './identity'
 import { VaultDrive } from './vault-drive'
+import { PublicCatalogManager } from './vault-drive/public-catalog'
 import { GlobalChunkStore } from './global-chunk-store'
 import {
   loadSettings,
@@ -25,6 +26,9 @@ import {
   loadSession,
   saveSession,
   clearSession,
+  loadNetworks,
+  saveNetworks,
+  NetworkStorageItem,
   createBlindClient,
   normalizeBlindKeys,
   pinCore
@@ -62,7 +66,15 @@ console.log('Application storage:', storageDir)
 pear.updater.on('updating', () => pipe.write('updating'))
 pear.updater.on('updated', () => pipe.write('updated'))
 
-const chunkStore = new GlobalChunkStore({ swarm, storageDir })
+const publicCatalog = new PublicCatalogManager(storageDir)
+publicCatalog.init().catch((err) => console.error('[PublicCatalog] Init error:', err))
+
+const chunkStore = new GlobalChunkStore({
+  swarm,
+  storageDir,
+  publicCatalog,
+  getNetworkKeyHex: () => state.networkKeyHex
+})
 chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
 
 interface State {
@@ -81,6 +93,8 @@ interface State {
   blinds: any
   settings: { blindPeerKeys: string[] }
   peerCount: number
+  networks: NetworkStorageItem[]
+  activeNetworkId: string | null
 }
 
 const state: State = {
@@ -98,7 +112,9 @@ const state: State = {
   chunkStore,
   blinds: null,
   settings: { blindPeerKeys: [] },
-  peerCount: 0
+  peerCount: 0,
+  networks: [],
+  activeNetworkId: null
 }
 
 let rpcChain = Promise.resolve()
@@ -139,6 +155,17 @@ function reply(id: number, ok: boolean, result: unknown, error?: unknown) {
 }
 
 function statusPayload() {
+  const currentNetwork = state.networks.find((n) => n.id === state.activeNetworkId) || state.networks[0] || null
+  const networkItems = state.networks.map((n) => ({
+    id: n.id,
+    name: n.name,
+    networkLink: n.networkLink,
+    networkKeyHex: n.networkKeyHex,
+    topicHex: n.topicHex,
+    peers: state.peerCount,
+    createdAt: n.createdAt
+  }))
+
   return {
     unlocked: state.unlocked,
     identity: state.identityHex,
@@ -146,10 +173,12 @@ function statusPayload() {
     peers: state.networkKeyHex ? state.peerCount : 0,
     blindPeerKeys: state.settings.blindPeerKeys || [],
     network: {
-      networkLink: state.networkLink,
-      networkKeyHex: state.networkKeyHex,
-      topicHex: state.topicHex,
-      joined: !!state.networkKeyHex
+      networkLink: currentNetwork?.networkLink || state.networkLink,
+      networkKeyHex: currentNetwork?.networkKeyHex || state.networkKeyHex,
+      topicHex: currentNetwork?.topicHex || state.topicHex,
+      joined: state.networks.length > 0 || !!state.networkKeyHex,
+      activeId: state.activeNetworkId || currentNetwork?.id || null,
+      networks: networkItems
     }
   }
 }
@@ -206,10 +235,30 @@ async function openVault(keys: {
   state.encryptionKey = keys.encryptionKey
   state.identityHex = b4a.toString(publicIdentity(keys.primaryKey), 'hex')
 
+  state.networks = await loadNetworks(storageDir)
+
   if (keys.networkKeyHex && keys.swarmTopic && keys.swarmChunkTopic) {
+    const netId = keys.networkKeyHex.slice(0, 12)
+    const existingIdx = state.networks.findIndex((n) => n.networkKeyHex === keys.networkKeyHex)
+    const item: NetworkStorageItem = {
+      id: netId,
+      name: `Network ${netId.slice(0, 6)}`,
+      networkLink: keys.networkLink || `p2p-drive://network/${keys.networkKeyHex}`,
+      networkKeyHex: keys.networkKeyHex,
+      topicHex: keys.topicHex || b4a.toString(keys.swarmTopic, 'hex'),
+      createdAt: existingIdx >= 0 ? state.networks[existingIdx].createdAt : Date.now()
+    }
+    if (existingIdx >= 0) {
+      state.networks[existingIdx] = item
+    } else {
+      state.networks.push(item)
+    }
+    state.activeNetworkId = netId
+    await saveNetworks(storageDir, state.networks)
+
     state.networkKeyHex = keys.networkKeyHex
-    state.networkLink = keys.networkLink || `p2p-drive://network/${keys.networkKeyHex}`
-    state.topicHex = keys.topicHex || b4a.toString(keys.swarmTopic, 'hex')
+    state.networkLink = item.networkLink
+    state.topicHex = item.topicHex
 
     // Join Network topic on Hyperswarm
     state.networkDiscovery = swarm.join(keys.swarmTopic, { server: true, client: true })
@@ -220,6 +269,8 @@ async function openVault(keys: {
 
     await state.chunkStore.joinNetwork(keys.swarmChunkTopic)
     console.log(`[P2PNetwork] Joined network swarm topic: ${state.topicHex}`)
+  } else if (state.networks.length > 0 && !state.activeNetworkId) {
+    state.activeNetworkId = state.networks[0].id
   }
 
   const vaultPath = vaultPathFor(state.identityHex!)
@@ -237,6 +288,8 @@ async function openVault(keys: {
     store: state.vaultStore,
     swarm,
     encryptionKey: keys.encryptionKey,
+    networkKeyHex: state.networkKeyHex,
+    publicCatalog,
     blinds: state.blinds,
     chunkStore: state.chunkStore
   })
@@ -294,7 +347,7 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
     return statusPayload()
   },
 
-  async createNetwork() {
+  async createNetwork({ name }: { name?: string } = {}) {
     let primaryKey = state.primaryKey
     let encryptionKey = state.encryptionKey
     if (!primaryKey || !encryptionKey) {
@@ -314,10 +367,17 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
       swarmChunkTopic: derived.swarmChunkTopic,
       topicHex: derived.topicHex
     })
-    return { status, networkLink, networkKeyHex }
+    if (name && state.activeNetworkId) {
+      const item = state.networks.find(n => n.id === state.activeNetworkId)
+      if (item) {
+        item.name = name
+        await saveNetworks(storageDir, state.networks)
+      }
+    }
+    return { status: statusPayload(), networkLink, networkKeyHex }
   },
 
-  async joinNetwork({ link }: { link: string }) {
+  async joinNetwork({ link, name }: { link: string; name?: string }) {
     if (!link) throw new Error('Enter a valid network invite link.')
     let primaryKey = state.primaryKey
     let encryptionKey = state.encryptionKey
@@ -338,7 +398,58 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
       swarmChunkTopic: derived.swarmChunkTopic,
       topicHex: derived.topicHex
     })
-    return { status, networkLink: derived.networkLink, networkKeyHex }
+    if (name && state.activeNetworkId) {
+      const item = state.networks.find(n => n.id === state.activeNetworkId)
+      if (item) {
+        item.name = name
+        await saveNetworks(storageDir, state.networks)
+      }
+    }
+    return { status: statusPayload(), networkLink: derived.networkLink, networkKeyHex }
+  },
+
+  async switchNetwork({ id }: { id: string }) {
+    const target = state.networks.find(n => n.id === id)
+    if (!target) throw new Error('Network not found.')
+    if (!state.primaryKey || !state.encryptionKey) throw new Error('Not unlocked.')
+    const derived = deriveNetworkKeys(target.networkKeyHex)
+    await openVault({
+      primaryKey: state.primaryKey,
+      encryptionKey: state.encryptionKey,
+      networkKeyHex: target.networkKeyHex,
+      networkLink: target.networkLink,
+      swarmTopic: derived.swarmTopic,
+      swarmChunkTopic: derived.swarmChunkTopic,
+      topicHex: derived.topicHex
+    })
+    state.activeNetworkId = id
+    return statusPayload()
+  },
+
+  async removeNetwork({ id }: { id: string }) {
+    state.networks = state.networks.filter(n => n.id !== id)
+    await saveNetworks(storageDir, state.networks)
+    if (state.activeNetworkId === id) {
+      state.activeNetworkId = state.networks[0]?.id || null
+      if (state.activeNetworkId) {
+        const nextNet = state.networks[0]
+        const derived = deriveNetworkKeys(nextNet.networkKeyHex)
+        if (state.primaryKey && state.encryptionKey) {
+          await openVault({
+            primaryKey: state.primaryKey,
+            encryptionKey: state.encryptionKey,
+            networkKeyHex: nextNet.networkKeyHex,
+            networkLink: nextNet.networkLink,
+            swarmTopic: derived.swarmTopic,
+            swarmChunkTopic: derived.swarmChunkTopic,
+            topicHex: derived.topicHex
+          })
+        }
+      } else {
+        await closeVault()
+      }
+    }
+    return statusPayload()
   },
 
   async createAccount() {
@@ -370,6 +481,7 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
     state.networkKeyHex = null
     state.networkLink = null
     state.topicHex = null
+    state.activeNetworkId = null
     await clearSession(storageDir)
     emit({ type: 'event', name: 'auth', data: { needsAuth: true, status: statusPayload() } })
     return { needsAuth: true }
@@ -385,9 +497,9 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
     return state.vault.mkdir(dirPath)
   },
 
-  async upload({ localPath, destPath, mime }: { localPath: string; destPath: string; mime?: string }) {
+  async upload({ localPath, destPath, mime, isPrivate }: { localPath: string; destPath: string; mime?: string; isPrivate?: boolean }) {
     if (!state.vault) throw new Error('Not unlocked')
-    return state.vault.upload(localPath, destPath, mime)
+    return state.vault.upload(localPath, destPath, mime, isPrivate !== false)
   },
 
   async download({ path: entryPath, destLocalPath }: { path: string; destLocalPath: string }) {

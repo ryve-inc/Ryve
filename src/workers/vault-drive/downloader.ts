@@ -10,26 +10,41 @@ export async function downloadFile({
   drive,
   chunkStore,
   encryptionKey,
+  networkKeyHex = null,
+  publicCatalog = null,
   entryPath,
   destLocalPath
 }: {
   drive: any
   chunkStore: any
   encryptionKey: Uint8Array | string
+  networkKeyHex?: string | null
+  publicCatalog?: any
   entryPath: string
   destLocalPath: string
 }) {
   const p = normalizePath(entryPath)
   await drive.ready()
-  const entry = await drive.entry(p)
-  if (!entry || !entry.value) throw new Error('File not found: ' + p)
+  let meta: any = null
+  let isPublicFile = false
 
-  const meta = entry.value.metadata
-  if (!meta || !meta.chunks || !Array.isArray(meta.chunks) || meta.chunks.length === 0) {
-    throw new Error('File metadata has no chunk manifest: ' + p)
+  const entry = await drive.entry(p)
+  if (entry && entry.value?.metadata) {
+    meta = entry.value.metadata
+  } else if (publicCatalog && networkKeyHex) {
+    meta = await publicCatalog.getPublicManifest(networkKeyHex, p)
+    if (meta) isPublicFile = true
   }
 
-  console.log(`[User:Download] Reassembling chunks for ${p}...`)
+  if (!meta || !meta.chunks || !Array.isArray(meta.chunks) || meta.chunks.length === 0) {
+    throw new Error('File metadata or chunk manifest not found: ' + p)
+  }
+
+  const effectiveKey = (isPublicFile && networkKeyHex) || (meta.isPrivate === false && networkKeyHex)
+    ? b4a.from(networkKeyHex.slice(0, 64), 'hex')
+    : encryptionKey
+
+  console.log(`[User:Download] Reassembling chunks for ${p} (Public: ${isPublicFile})...`)
 
   let encryptedBuffer: Uint8Array
   let missingShardsDetected = false
@@ -116,8 +131,8 @@ export async function downloadFile({
     encryptedBuffer = b4a.concat(encryptedChunks)
   }
 
-  // Decrypt full buffer using master encryption key and saved nonce
-  const decryptedBuffer = decryptBuffer(encryptedBuffer, encryptionKey, meta.nonce)
+  // Decrypt full buffer using master encryption key or network key and saved nonce
+  const decryptedBuffer = decryptBuffer(encryptedBuffer, effectiveKey, meta.nonce)
 
   // Write uncorrupted, decrypted file to destination path
   let finalDest = destLocalPath

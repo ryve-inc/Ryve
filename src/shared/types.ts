@@ -36,6 +36,17 @@ export type DriveEntry = {
   byteLength: number
   metadata: Record<string, unknown> | null
   chunkCount?: number
+  isPrivate?: boolean
+}
+
+export type NetworkItem = {
+  id: string
+  name: string
+  networkLink: string
+  networkKeyHex: string
+  topicHex: string
+  peers: number
+  createdAt: number
 }
 
 export type NetworkInfo = {
@@ -43,6 +54,8 @@ export type NetworkInfo = {
   networkKeyHex: string | null
   topicHex: string | null
   joined: boolean
+  activeId: string | null
+  networks: NetworkItem[]
 }
 
 export type AppStatus = {

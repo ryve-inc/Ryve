@@ -4,7 +4,13 @@ import b4a from 'b4a'
 import ProtomuxRPC from 'protomux-rpc'
 import c from 'compact-encoding'
 
-export function setupConnectionRpc(conn: any, swarm: any, cacheDir: string) {
+export function setupConnectionRpc(
+  conn: any,
+  swarm: any,
+  cacheDir: string,
+  publicCatalog?: any,
+  getNetworkKeyHex?: () => string | null
+) {
   if (conn._chunkRpc) return
 
   console.log(`[ChunkStore:Network] Swarm socket connected. Active peers: ${swarm.connections.size}`)
@@ -35,6 +41,21 @@ export function setupConnectionRpc(conn: any, swarm: any, cacheDir: string) {
     await fs.promises.writeFile(chunkPath, buf)
     console.log(`[ChunkStore:Cache] Stored chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes) from remote peer`)
     return { ok: true, hash: req.hash }
+  })
+
+  rpc.respond('get-public-catalog', async () => {
+    if (!publicCatalog || !getNetworkKeyHex) return { manifests: [] }
+    const netKey = getNetworkKeyHex()
+    if (!netKey) return { manifests: [] }
+    const manifests = await publicCatalog.getPublicFiles(netKey)
+    return { manifests }
+  })
+
+  rpc.respond('announce-public-file', async (req: any) => {
+    if (!req || !req.manifest || !req.manifest.networkKeyHex || !publicCatalog) return { ok: false }
+    await publicCatalog.addPublicFile(req.manifest.networkKeyHex, req.manifest)
+    console.log(`[PublicCatalog:RPC] Received public file announcement for ${req.manifest.path} from peer`)
+    return { ok: true }
   })
 
   conn.on('close', () => {

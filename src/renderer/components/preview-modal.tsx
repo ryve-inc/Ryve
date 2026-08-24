@@ -1,4 +1,5 @@
 import { useDrive } from '@/context/drive-context'
+import { X } from 'lucide-react'
 
 export function PreviewModal() {
   const { previewModal, closePreviewModal } = useDrive()
@@ -24,9 +25,10 @@ export function PreviewModal() {
           </div>
           <button
             onClick={closePreviewModal}
-            className="rounded-xl border border-line bg-soil px-4 py-2 font-mono text-xs text-sand hover:border-leaf hover:bg-soil/80 transition-all"
+            className="flex items-center gap-1.5 rounded-xl border border-line bg-soil px-3.5 py-1.5 font-mono text-xs text-sand hover:border-leaf hover:bg-soil/80 transition-all cursor-pointer"
           >
-            ✕ Close
+            <X className="h-4 w-4" />
+            <span>Close</span>
           </button>
         </div>
 

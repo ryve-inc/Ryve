@@ -3,7 +3,7 @@ import { UploadButton } from '@/components/buttons/upload-button'
 import { AppSidebar } from '@/components/app-sidebar'
 import { DetailPanel } from '@/components/detail-panel'
 import { FilesPage } from '@/pages/files-page'
-import { SettingsPage } from '@/pages/settings-page'
+import { HomeDashboard } from '@/pages/home-dashboard'
 import { cn } from '@/lib/utils'
 import { useDrive } from '@/context/drive-context'
 import { Share2 } from 'lucide-react'
@@ -15,13 +15,19 @@ export function AppShell() {
     dragging,
     setDragging,
     uploadFiles,
-    openNetworkInfoModal
+    openNetworkInfoModal,
+    status
   } = useDrive()
 
-  const breadcrumb = currentNav === 'files' ? currentDir : 'Settings'
+  const activeNetwork = (status.network.networks || []).find((n) => n.id === status.network.activeId)
+
+  const breadcrumb =
+    currentNav === 'home'
+      ? 'RYVE / Dashboard'
+      : `${activeNetwork?.name || 'P2P Network'} ${currentDir}`
 
   return (
-    <section className="grid h-full grid-cols-[260px_1fr_auto]">
+    <section className="grid h-full grid-cols-[280px_1fr_auto]">
       <AppSidebar />
 
       <main className="flex min-w-0 flex-col">
@@ -33,7 +39,7 @@ export function AppShell() {
               <UploadButton />
               <button
                 onClick={openNetworkInfoModal}
-                className="flex items-center gap-1.5 rounded-xl border border-leaf/40 bg-fern/30 px-3.5 py-2 text-xs font-semibold text-leaf hover:bg-fern/60 transition-colors"
+                className="flex items-center gap-1.5 rounded-xl border border-leaf/40 bg-fern/30 px-3.5 py-2 text-xs font-semibold text-leaf hover:bg-fern/60 transition-colors cursor-pointer"
               >
                 <Share2 className="h-3.5 w-3.5" />
                 <span>Invite to Network</span>
@@ -57,7 +63,7 @@ export function AppShell() {
             }
           }}
         >
-          {currentNav === 'files' ? <FilesPage /> : <SettingsPage />}
+          {currentNav === 'home' ? <HomeDashboard /> : <FilesPage />}
         </div>
       </main>
 
@@ -65,4 +71,3 @@ export function AppShell() {
     </section>
   )
 }
-

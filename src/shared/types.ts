@@ -61,6 +61,7 @@ export type NetworkInfo = {
 export type AppStatus = {
   unlocked: boolean
   identity: string | null
+  displayName: string | null
   driveKey: string | null
   peers: number
   blindPeerKeys: string[]

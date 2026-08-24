@@ -91,7 +91,7 @@ export function FilesPage() {
           const meta = entry.isDirectory
             ? 'Folder'
             : `${formatBytes(entry.byteLength)} · ${entry.chunkCount || 0} chunks · ${
-                isPriv ? '🔒 Private (0 local chunks)' : '🌐 Public (Seeded)'
+                isPriv ? 'Private (0 local chunks)' : 'Public (Seeded)'
               }`
           return (
             <FileRow

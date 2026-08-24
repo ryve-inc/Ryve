@@ -9,14 +9,15 @@ import type { GlobalChunkStoreOptions } from './types'
 
 /**
  * Stateless GlobalChunkStore for P2P chunk offloading & retrieval.
- * Zero background daemons, zero idle CPU/RAM overhead, scale-proof.
+ * Supports joining multiple network chunk topics simultaneously so that
+ * chunks are served/received across ALL joined networks in the background.
  */
 class GlobalChunkStore {
   swarm: any
   storageDir: string
   cacheDir: string
-  topic: Uint8Array | null
-  discovery: any
+  /** Map of networkId → { topic, discovery } for all joined networks */
+  joinedChunkTopics: Map<string, { topic: Uint8Array; discovery: any }>
   publicCatalog: any
   getNetworkKeyHex: (() => string | null) | null
   onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
@@ -35,8 +36,7 @@ class GlobalChunkStore {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
-    this.topic = null
-    this.discovery = null
+    this.joinedChunkTopics = new Map()
     this.publicCatalog = publicCatalog
     this.getNetworkKeyHex = getNetworkKeyHex
     this.onPublicCatalogUpdated = onPublicCatalogUpdated
@@ -51,27 +51,47 @@ class GlobalChunkStore {
     }
   }
 
-  async joinNetwork(swarmChunkTopic: Uint8Array) {
-    await this.leaveNetwork()
-    this.topic = swarmChunkTopic
-    this.discovery = this.swarm.join(this.topic, {
+  /**
+   * Join a single network's chunk topic. Does NOT leave existing topics.
+   * Safe to call multiple times for the same networkId (idempotent).
+   */
+  async joinNetwork(networkId: string, swarmChunkTopic: Uint8Array) {
+    if (this.joinedChunkTopics.has(networkId)) return
+
+    const discovery = this.swarm.join(swarmChunkTopic, {
       server: true,
       client: true
     })
-    await this.discovery.flushed().catch(() => {})
-    console.log('[ChunkStore] Joined private network chunk topic')
+    await discovery.flushed().catch(() => {})
+    this.joinedChunkTopics.set(networkId, { topic: swarmChunkTopic, discovery })
+    console.log(`[ChunkStore] Joined chunk topic for network ${networkId}`)
+
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
       if (netKey) this.syncPublicCatalog(netKey).catch(() => {})
     }
   }
 
-  async leaveNetwork() {
-    if (this.discovery) {
-      await this.discovery.destroy().catch(() => {})
-      this.discovery = null
+  /**
+   * Leave a specific network's chunk topic.
+   */
+  async leaveNetwork(networkId: string) {
+    const entry = this.joinedChunkTopics.get(networkId)
+    if (!entry) return
+    await entry.discovery.destroy().catch(() => {})
+    this.joinedChunkTopics.delete(networkId)
+    console.log(`[ChunkStore] Left chunk topic for network ${networkId}`)
+  }
+
+  /**
+   * Leave ALL chunk topics (used on logout/app exit).
+   */
+  async leaveAllNetworks() {
+    for (const [netId, entry] of this.joinedChunkTopics) {
+      await entry.discovery.destroy().catch(() => {})
+      console.log(`[ChunkStore] Left chunk topic for network ${netId}`)
     }
-    this.topic = null
+    this.joinedChunkTopics.clear()
   }
 
   _onConnection(conn: any) {
@@ -175,7 +195,7 @@ class GlobalChunkStore {
     }
 
     console.log(
-      `[ChunkStore:Uploader] ✓ Offloaded ${chunkList.length} chunks across nodes (Self retained ${selfAssignedHashes.size} chunk(s), purged ${purgedCount} local chunk file(s)).`
+      `[ChunkStore:Uploader] Offloaded ${chunkList.length} chunks across nodes (Self retained ${selfAssignedHashes.size} chunk(s), purged ${purgedCount} local chunk file(s)).`
     )
   }
 
@@ -259,7 +279,7 @@ class GlobalChunkStore {
 
   async close() {
     this.swarm.off('connection', this._onConnection)
-    await this.leaveNetwork()
+    await this.leaveAllNetworks()
   }
 }
 

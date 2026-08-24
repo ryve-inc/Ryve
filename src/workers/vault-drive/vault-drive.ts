@@ -74,6 +74,10 @@ class VaultDrive {
       const full = joinPath(folder, name)
       if (names.has(full)) continue
       const exact = await this.drive.entry(full)
+      const fileNetKey = exact?.value?.metadata?.networkKeyHex
+      if (fileNetKey && this.networkKeyHex && fileNetKey !== this.networkKeyHex) {
+        continue
+      }
       const isNestedOnly = rest.includes('/')
       names.set(full, {
         path: full,

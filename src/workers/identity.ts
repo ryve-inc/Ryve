@@ -87,15 +87,33 @@ function publicIdentity(primaryKey: Uint8Array): Uint8Array {
 /**
  * P2P Network Key & Invite Link Utilities
  */
-export function createNetworkKey(): { networkKeyHex: string; networkLink: string } {
+export function createNetworkKey(name?: string): { networkKeyHex: string; networkLink: string } {
   const randomBytes = hypercoreCrypto.randomBytes(32)
   const networkKeyHex = b4a.toString(randomBytes, 'hex')
-  const networkLink = `p2p-drive://network/${networkKeyHex}`
+  const encodedName = name ? encodeURIComponent(name.trim()) : ''
+  const networkLink = encodedName
+    ? `p2p-drive://network/${networkKeyHex}?name=${encodedName}`
+    : `p2p-drive://network/${networkKeyHex}`
   return { networkKeyHex, networkLink }
 }
 
-export function parseNetworkLink(inputLink: string): string {
+export function parseNetworkLink(inputLink: string): { networkKeyHex: string; name: string | null } {
   let cleaned = inputLink.trim()
+  let extractedName: string | null = null
+
+  if (cleaned.includes('name=')) {
+    try {
+      const match = cleaned.match(/[?&]name=([^&]+)/)
+      if (match && match[1]) {
+        extractedName = decodeURIComponent(match[1])
+      }
+    } catch {}
+  }
+
+  if (cleaned.includes('?')) {
+    cleaned = cleaned.split('?')[0]
+  }
+
   if (cleaned.startsWith('p2p-drive://network/')) {
     cleaned = cleaned.replace('p2p-drive://network/', '')
   } else if (cleaned.startsWith('p2p://network/')) {
@@ -107,10 +125,10 @@ export function parseNetworkLink(inputLink: string): string {
   if (cleaned.length !== 64) {
     throw new Error('Invalid Network Invite Link. Expected a 64-character hex network key.')
   }
-  return cleaned.toLowerCase()
+  return { networkKeyHex: cleaned.toLowerCase(), name: extractedName }
 }
 
-export function deriveNetworkKeys(networkKeyHex: string): {
+export function deriveNetworkKeys(networkKeyHex: string, name?: string): {
   primaryKey: Uint8Array
   encryptionKey: Uint8Array
   swarmTopic: Uint8Array
@@ -124,10 +142,19 @@ export function deriveNetworkKeys(networkKeyHex: string): {
   const swarmTopic = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-swarm/v1'), networkKey]))
   const swarmChunkTopic = hypercoreCrypto.hash(b4a.concat([b4a.from('p2p-drive/net-chunk/v1'), networkKey]))
   const topicHex = b4a.toString(swarmTopic, 'hex')
-  const networkLink = `p2p-drive://network/${networkKeyHex}`
+  const encodedName = name ? encodeURIComponent(name.trim()) : ''
+  const networkLink = encodedName
+    ? `p2p-drive://network/${networkKeyHex}?name=${encodedName}`
+    : `p2p-drive://network/${networkKeyHex}`
 
-  return { primaryKey, encryptionKey, swarmTopic, swarmChunkTopic, topicHex, networkLink }
+  return {
+    primaryKey,
+    encryptionKey,
+    swarmTopic,
+    swarmChunkTopic,
+    topicHex,
+    networkLink
+  }
 }
 
 export { createAccount, unlockFromMnemonic, publicIdentity }
-

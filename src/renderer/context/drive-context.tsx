@@ -18,8 +18,8 @@ import {
   subscribeWorkerIpc
 } from '@/lib/worker-bridge'
 
-export type AuthPanel = 'boot' | 'home' | 'create' | 'confirm' | 'unlock'
-export type NavName = 'files' | 'shared' | 'settings'
+export type AuthPanel = 'boot' | 'home' | 'name' | 'create' | 'confirm' | 'unlock'
+export type NavName = 'home' | 'files' | 'shared' | 'settings'
 
 export type SelectedEntry = {
   path: string
@@ -56,6 +56,8 @@ type DriveContextValue = {
   authPanel: AuthPanel
   authFlowActive: boolean
   pendingMnemonic: string
+  displayName: string
+  setDisplayName: (val: string) => void
   currentNav: NavName
   currentDir: string
   entries: DriveEntry[]
@@ -100,7 +102,7 @@ type DriveContextValue = {
   resolveAuth: (unlocked: boolean, nextStatus?: AppStatus | null) => void
   showAuthHome: () => void
   showApp: () => void
-  createNetwork: () => Promise<void>
+  createNetwork: (name?: string) => Promise<unknown>
   joinNetwork: (link: string) => Promise<void>
   openCreateNetworkModal: (inviteLink: string) => void
   closeCreateNetworkModal: () => void
@@ -108,7 +110,7 @@ type DriveContextValue = {
   closeJoinNetworkModal: () => void
   openNetworkInfoModal: () => void
   closeNetworkInfoModal: () => void
-  createAccount: () => Promise<void>
+  createAccount: (name?: string) => Promise<void>
   confirmCreateAccount: (typed: string) => Promise<void>
   unlock: (mnemonic: string) => Promise<void>
   logout: () => Promise<void>
@@ -132,6 +134,7 @@ type DriveContextValue = {
 const emptyStatus: AppStatus = {
   unlocked: false,
   identity: null,
+  displayName: null,
   driveKey: null,
   peers: 0,
   blindPeerKeys: [],
@@ -173,7 +176,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   const [authFlowActive, setAuthFlowActive] = useState(false)
   const [authResolved, setAuthResolved] = useState(false)
   const [pendingMnemonic, setPendingMnemonic] = useState('')
-  const [currentNav, setCurrentNav] = useState<NavName>('files')
+  const [displayName, setDisplayName] = useState('')
+  const [currentNav, setCurrentNav] = useState<NavName>('home')
   const [currentDir, setCurrentDirState] = useState('/')
   const [entries, setEntries] = useState<DriveEntry[]>([])
   const [createNetworkModal, setCreateNetworkModal] = useState<{ open: boolean; inviteLink: string }>({
@@ -421,9 +425,12 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     (nextStatus?: AppStatus | null) => {
       setAuthResolved(true)
       setAuthFlowActive(false)
-      if (nextStatus) setStatus(nextStatus)
+      if (nextStatus) {
+        setStatus(nextStatus)
+        if (nextStatus.displayName) setDisplayName(nextStatus.displayName)
+      }
       setView('app')
-      setCurrentNav('files')
+      setCurrentNav('home')
       refreshFiles().catch((err) => showToast(err.message))
     },
     [refreshFiles, showToast]
@@ -452,9 +459,10 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setAuthPanel(authResolvedRef.current ? 'home' : 'boot')
   }, [])
 
-  const createAccount = useCallback(async () => {
+  const createAccount = useCallback(async (name?: string) => {
     setAuthFlowActive(true)
     try {
+      if (name) setDisplayName(name)
       const res = await rpc<{ mnemonic: string }>('createAccount')
       setPendingMnemonic(res.mnemonic)
       setAuthPanel('create')
@@ -470,12 +478,12 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       const expected = normalizeMnemonic(pendingMnemonic)
       if (!normalized) throw new Error('Enter your recovery key to continue.')
       if (normalized !== expected) throw new Error('Recovery key does not match. Try again.')
-      const res = await rpc<{ status: AppStatus }>('confirmCreateAccount', { mnemonic: normalized })
+      const res = await rpc<{ status: AppStatus }>('confirmCreateAccount', { mnemonic: normalized, displayName })
       setPendingMnemonic('')
       resolveAuth(true, res.status)
-      showToast('Drive ready')
+      showToast('RYVE ready')
     },
-    [pendingMnemonic, resolveAuth, showToast]
+    [pendingMnemonic, displayName, resolveAuth, showToast]
   )
 
   const unlock = useCallback(
@@ -547,18 +555,21 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setNetworkInfoModal({ open: false })
   }, [])
 
-  const createNetwork = useCallback(async () => {
-    setAuthFlowActive(true)
-    try {
-      const res = await rpc<{ status: AppStatus; networkLink: string }>('createNetwork')
-      resolveAuth(true, res.status)
-      openCreateNetworkModal(res.networkLink)
-      showToast('P2P Network Created')
-    } catch (err: any) {
-      setAuthFlowActive(false)
-      showToast(err.message || 'Network creation failed')
-    }
-  }, [openCreateNetworkModal, resolveAuth, showToast])
+  const createNetwork = useCallback(
+    async (name?: string) => {
+      try {
+        const netName = name || 'RYVE Workspace'
+        const res = await rpc<{ status: AppStatus; networkLink: string; networkKeyHex: string }>('createNetwork', { name: netName })
+        if (res?.status) setStatus(res.status)
+        await refreshFiles()
+        return res
+      } catch (err: any) {
+        showToast(err?.message || 'Network creation failed')
+        throw err
+      }
+    },
+    [refreshFiles, showToast]
+  )
 
   const joinNetwork = useCallback(
     async (link: string) => {
@@ -820,7 +831,6 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-
   const value = useMemo<DriveContextValue>(
     () => ({
       status,
@@ -828,6 +838,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       authPanel,
       authFlowActive,
       pendingMnemonic,
+      displayName,
+      setDisplayName,
       currentNav,
       currentDir,
       entries,
@@ -894,6 +906,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       authPanel,
       authFlowActive,
       pendingMnemonic,
+      displayName,
+      setDisplayName,
       currentNav,
       currentDir,
       entries,
@@ -908,12 +922,17 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       createNetworkModal,
       joinNetworkModal,
       networkInfoModal,
+      setDragging,
       showToast,
+      setAuthPanel,
+      setPendingMnemonic,
+      setAuthFlowActive,
       navigate,
       refreshFiles,
       onEntryClick,
       showDetail,
       closeDetail,
+      uploadPaths,
       uploadFiles,
       askDialog,
       askText,
@@ -939,11 +958,13 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       saveBlindPeers,
       mkdir,
       downloadSelected,
+      previewSelected,
+      previewModal,
+      closePreviewModal,
       deleteSelected,
       copyClipboard
     ]
   )
-
 
   return <DriveContext.Provider value={value}>{children}</DriveContext.Provider>
 }

@@ -2,6 +2,7 @@ import { DetailCloseButton } from '@/components/buttons/detail-close-button'
 import { DeleteButton } from '@/components/buttons/delete-button'
 import { DownloadButton } from '@/components/buttons/download-button'
 import { useDrive } from '@/context/drive-context'
+import { Eye } from 'lucide-react'
 
 export function DetailPanel() {
   const { detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
@@ -19,9 +20,10 @@ export function DetailPanel() {
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => previewSelected().catch((err) => showToast(err.message))}
-          className="rounded-xl border border-leaf bg-leaf/10 px-4 py-2 font-mono text-xs text-leaf hover:bg-leaf/20 transition-all"
+          className="flex items-center gap-1.5 rounded-xl border border-leaf bg-leaf/10 px-4 py-2 font-mono text-xs text-leaf hover:bg-leaf/20 transition-all cursor-pointer"
         >
-          👁 View File
+          <Eye className="h-3.5 w-3.5" />
+          <span>Preview</span>
         </button>
         <DownloadButton />
         {selectedEntry?.source === 'vault' ? <DeleteButton /> : null}

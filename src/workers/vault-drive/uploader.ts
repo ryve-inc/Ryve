@@ -89,6 +89,7 @@ export async function uploadFile({
     mime,
     isPrivate,
     uploadedAt: Date.now(),
+    networkKeyHex,
     sourceName: path.basename(localPath),
     originalSize: rawBuffer.byteLength,
     encryptedSize: encrypted.byteLength,

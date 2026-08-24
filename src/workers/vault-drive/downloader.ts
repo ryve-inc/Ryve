@@ -71,7 +71,7 @@ export async function downloadFile({
     const fetchPromises = meta.chunks.map(async (chunkMeta: any) => {
       if (!chunkStore) return
       try {
-        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, 60000)
+        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
         const actualHash = hashChunk(chunkBuf)
         if (actualHash === chunkMeta.hash) {
           fetchedBuffers.set(chunkMeta.hash, chunkBuf)
@@ -124,7 +124,7 @@ export async function downloadFile({
         throw new Error('Global chunk store unavailable.')
       }
       try {
-        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, 60000)
+        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
         const actualHash = hashChunk(chunkBuf)
         if (actualHash !== chunkMeta.hash) {
           throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
@@ -172,7 +172,7 @@ export async function downloadFile({
         .filter((c: any) => c.buffer && c.buffer.byteLength > 0)
 
       if (seedChunkList.length > 0) {
-        await chunkStore.offloadChunks(seedChunkList, k, m)
+        await chunkStore.offloadChunks(seedChunkList, k, m, networkKeyHex)
       }
     } catch (err: any) {
       console.warn(`[User:Download:PublicSeeding] Public seeding offload warning:`, err?.message || err)

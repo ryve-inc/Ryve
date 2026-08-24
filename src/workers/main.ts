@@ -74,6 +74,8 @@ const chunkStore = new GlobalChunkStore({
   storageDir,
   publicCatalog,
   getNetworkKeyHex: () => state.networkKeyHex,
+  getJoinedNetworkKeys: () => state.networks.map((n) => n.networkKeyHex),
+  isNetworkJoined: (netKey) => state.networks.some((n) => n.networkKeyHex === netKey),
   onPublicCatalogUpdated: (netKey) => {
     if (netKey === state.networkKeyHex) {
       console.log(`[Main:Event] Public catalog updated for active network ${netKey.slice(0, 12)}. Emitting event to UI.`)
@@ -177,7 +179,14 @@ swarm.on('connection', (conn: any, peerInfo: any) => {
   // Track which networks this connection belongs to
   const netIds = resolveNetworkIds(peerInfo)
   ;(conn as any)._networkIds = netIds
+  if (!(conn as any)._networkKeyHexes) {
+    (conn as any)._networkKeyHexes = new Set<string>()
+  }
   for (const netId of netIds) {
+    const net = state.networks.find((n) => n.id === netId)
+    if (net) {
+      (conn as any)._networkKeyHexes.add(net.networkKeyHex)
+    }
     state.networkPeerCounts.set(netId, (state.networkPeerCounts.get(netId) || 0) + 1)
   }
 

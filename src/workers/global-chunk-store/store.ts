@@ -20,6 +20,8 @@ class GlobalChunkStore {
   joinedChunkTopics: Map<string, { topic: Uint8Array; discovery: any }>
   publicCatalog: any
   getNetworkKeyHex: (() => string | null) | null
+  getJoinedNetworkKeys: (() => string[]) | null
+  isNetworkJoined: ((networkKeyHex: string) => boolean) | null
   onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
 
   constructor({
@@ -27,18 +29,18 @@ class GlobalChunkStore {
     storageDir,
     publicCatalog = null,
     getNetworkKeyHex = null,
+    getJoinedNetworkKeys = null,
+    isNetworkJoined = null,
     onPublicCatalogUpdated = null
-  }: GlobalChunkStoreOptions & {
-    publicCatalog?: any
-    getNetworkKeyHex?: (() => string | null) | null
-    onPublicCatalogUpdated?: ((networkKeyHex: string) => void) | null
-  }) {
+  }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
     this.joinedChunkTopics = new Map()
     this.publicCatalog = publicCatalog
     this.getNetworkKeyHex = getNetworkKeyHex
+    this.getJoinedNetworkKeys = getJoinedNetworkKeys
+    this.isNetworkJoined = isNetworkJoined
     this.onPublicCatalogUpdated = onPublicCatalogUpdated
     this._onConnection = this._onConnection.bind(this)
   }
@@ -49,6 +51,28 @@ class GlobalChunkStore {
     for (const conn of this.swarm.connections) {
       this._onConnection(conn)
     }
+  }
+
+  /**
+   * Check if an active connection belongs to a specific network.
+   */
+  isConnInNetwork(conn: any, networkKeyHex: string): boolean {
+    if (!networkKeyHex) return false
+    const netId = networkKeyHex.slice(0, 12)
+    if (conn._networkKeyHexes && conn._networkKeyHexes.has(networkKeyHex)) {
+      return true
+    }
+    if (Array.isArray(conn._networkIds) && conn._networkIds.includes(netId)) {
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Get all active online RPC connections that belong to the specified network.
+   */
+  getPeersForNetwork(networkKeyHex: string): any[] {
+    return this._getActiveRpcConnections().filter((conn) => this.isConnInNetwork(conn, networkKeyHex))
   }
 
   /**
@@ -101,7 +125,9 @@ class GlobalChunkStore {
       this.cacheDir,
       this.publicCatalog,
       this.getNetworkKeyHex || undefined,
-      this.onPublicCatalogUpdated || undefined
+      this.onPublicCatalogUpdated || undefined,
+      this.getJoinedNetworkKeys || undefined,
+      this.isNetworkJoined || undefined
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -111,15 +137,20 @@ class GlobalChunkStore {
 
   async syncPeerCatalog(conn: any, networkKeyHex: string) {
     const rpc = (conn as any)._chunkRpc
-    if (!rpc || rpc.closed || !this.publicCatalog) return
+    if (!rpc || rpc.closed || !this.publicCatalog || !networkKeyHex) return
+    if (!this.isConnInNetwork(conn, networkKeyHex)) return
+
     try {
-      const res = await rpc.request('get-public-catalog', {}, { timeout: 10000 })
+      const res = await rpc.request('get-public-catalog', { networkKeyHex }, { timeout: 10000 })
       if (res && Array.isArray(res.manifests) && res.manifests.length > 0) {
-        const added = await this.publicCatalog.mergeRemoteManifests(networkKeyHex, res.manifests)
-        if (added) {
-          console.log(`[PublicCatalog:Sync] Merged ${res.manifests.length} public file manifest(s) from peer`)
-          if (this.onPublicCatalogUpdated) {
-            this.onPublicCatalogUpdated(networkKeyHex)
+        const matching = res.manifests.filter((m: any) => m && m.networkKeyHex === networkKeyHex)
+        if (matching.length > 0) {
+          const added = await this.publicCatalog.mergeRemoteManifests(networkKeyHex, matching)
+          if (added) {
+            console.log(`[PublicCatalog:Sync] Merged ${matching.length} public file manifest(s) for network ${networkKeyHex.slice(0, 12)}`)
+            if (this.onPublicCatalogUpdated) {
+              this.onPublicCatalogUpdated(networkKeyHex)
+            }
           }
         }
       }
@@ -131,13 +162,18 @@ class GlobalChunkStore {
   }
 
   async syncPublicCatalog(networkKeyHex: string) {
-    for (const conn of this._getActiveRpcConnections()) {
+    const peers = this.getPeersForNetwork(networkKeyHex)
+    for (const conn of peers) {
       await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
     }
   }
 
   async broadcastPublicFile(manifest: any) {
-    for (const conn of this._getActiveRpcConnections()) {
+    if (!manifest || !manifest.networkKeyHex) return
+    const netKey = manifest.networkKeyHex
+    const targetPeers = this.getPeersForNetwork(netKey)
+
+    for (const conn of targetPeers) {
       const rpc = (conn as any)._chunkRpc
       if (!rpc || rpc.closed) continue
       try {
@@ -152,7 +188,7 @@ class GlobalChunkStore {
    * Helper function to send allocated chunks over RPC to remote peers,
    * retain self-assigned chunks locally, and purge unassigned local chunk files.
    */
-  async _distributeAndPruneChunks(chunkList: any[], allocation: any) {
+  async _distributeAndPruneChunks(chunkList: any[], allocation: any, networkKeyHex?: string | null) {
     const offloadedHashes = new Set<string>()
     const selfAssignedHashes = new Set<string>()
 
@@ -173,7 +209,8 @@ class GlobalChunkStore {
             'store-chunk',
             {
               hash: chunk.hash,
-              data: b4a.toString(chunk.buffer, 'hex')
+              data: b4a.toString(chunk.buffer, 'hex'),
+              networkKeyHex: networkKeyHex || undefined
             },
             { timeout: 60000 }
           )
@@ -200,9 +237,9 @@ class GlobalChunkStore {
   }
 
   /**
-   * Erasure Coding chunk offloading using dynamic peer-aware allocation across uploader and peers.
+   * Erasure Coding chunk offloading strictly distributed only among peers of the specified network.
    */
-  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M) {
+  async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, networkKeyHex?: string | null) {
     // 1. Save all chunks to local peer cache first
     for (const chunk of chunkList) {
       const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
@@ -210,7 +247,8 @@ class GlobalChunkStore {
     }
 
     const selfNode = { isSelf: true }
-    const remotePeers = Array.from(this.swarm.connections)
+    // Strictly select ONLY peers that belong to this network
+    const remotePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : []
     const nodes = [selfNode, ...remotePeers]
 
     const allocation = allocateChunksToPeers(chunkList, nodes, K, M)
@@ -221,8 +259,8 @@ class GlobalChunkStore {
       }
     }
 
-    // 2. Distribute chunks to remote peers via RPC & prune unassigned local chunk files
-    await this._distributeAndPruneChunks(chunkList, allocation)
+    // 2. Distribute chunks to remote network peers via RPC & prune unassigned local chunk files
+    await this._distributeAndPruneChunks(chunkList, allocation, networkKeyHex)
 
     return allocation
   }
@@ -239,9 +277,9 @@ class GlobalChunkStore {
   }
 
   /**
-   * Fetches an encrypted chunk using ProtomuxRPC querying.
+   * Fetches an encrypted chunk from peers belonging to this network.
    */
-  async fetchChunk(hash: string, timeoutMs = 60000) {
+  async fetchChunk(hash: string, networkKeyHex?: string | null, timeoutMs = 60000) {
     // 1. Check local .peer-cache first
     const localChunkPath = path.join(this.cacheDir, hash + '.bin')
     try {
@@ -249,8 +287,9 @@ class GlobalChunkStore {
       return localBuf
     } catch {}
 
-    // 2. Query online network peers over Protomux RPC
-    const connections = this._getActiveRpcConnections()
+    // 2. Query network peers over Protomux RPC
+    const candidatePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    const connections = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
 
     if (connections.length === 0) {
       throw new Error(`Chunk ${hash.slice(0, 12)} unavailable: No online peers connected.`)
@@ -259,7 +298,7 @@ class GlobalChunkStore {
     const requests = connections.map(async (conn: any) => {
       const rpc = conn._chunkRpc
       if (!rpc || rpc.closed) throw new Error('RPC closed')
-      const res = await rpc.request('get-chunk', { hash }, { timeout: timeoutMs })
+      const res = await rpc.request('get-chunk', { hash, networkKeyHex: networkKeyHex || undefined }, { timeout: timeoutMs })
       if (res && res.data) {
         const buf = b4a.from(res.data, 'hex')
         const actualHash = b4a.toString(hypercoreCrypto.hash(buf), 'hex')
@@ -273,7 +312,7 @@ class GlobalChunkStore {
     try {
       return await Promise.any(requests)
     } catch (err) {
-      throw new Error(`Chunk ${hash.slice(0, 12)} fetch failed: Not found or timed out across all connected peers.`)
+      throw new Error(`Chunk ${hash.slice(0, 12)} fetch failed: Not found or timed out across network peers.`)
     }
   }
 

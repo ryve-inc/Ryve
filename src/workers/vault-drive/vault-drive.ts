@@ -96,6 +96,7 @@ class VaultDrive {
         const publicFiles = await this.publicCatalog.getPublicFiles(this.networkKeyHex)
         for (const pubFile of publicFiles) {
           if (!pubFile || !pubFile.path) continue
+          if (pubFile.networkKeyHex && pubFile.networkKeyHex !== this.networkKeyHex) continue
           const rest = folder === '/' ? pubFile.path.slice(1) : pubFile.path.slice(folder.length + 1)
           if (!rest) continue
           const name = rest.split('/')[0]
@@ -126,7 +127,7 @@ class VaultDrive {
     const p = normalizePath(dirPath)
     const keep = p === '/' ? '/.keep' : joinPath(p, '.keep')
     await this.drive.put(keep, b4a.alloc(0), {
-      metadata: { directoryMarker: true }
+      metadata: { directoryMarker: true, networkKeyHex: this.networkKeyHex }
     })
     return { path: p }
   }
@@ -160,6 +161,9 @@ class VaultDrive {
   async delete(entryPath: string) {
     const p = normalizePath(entryPath)
     await this.drive.del(p)
+    if (this.publicCatalog && this.networkKeyHex) {
+      await this.publicCatalog.removePublicFile(this.networkKeyHex, p).catch(() => {})
+    }
     return { path: p }
   }
 

@@ -81,7 +81,7 @@ export async function uploadFile({
   // 3. Offload chunks to network nodes (distributed equally across uploader and peers)
   let allocation = null
   if (chunkStore) {
-    allocation = await chunkStore.offloadChunks(chunks, DEFAULT_EC_K, DEFAULT_EC_M)
+    allocation = await chunkStore.offloadChunks(chunks, DEFAULT_EC_K, DEFAULT_EC_M, networkKeyHex)
   }
 
   // 4. Save metadata index in drive (tiny record)

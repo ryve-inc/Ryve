@@ -32,10 +32,10 @@ export function AuthUnlockPage() {
       }}
     >
       <div className="iris-wash -mx-6 -mt-6 rounded-t-3xl px-6 py-4">
-        <p className="meta-label m-0 text-leaf">Access</p>
-        <h2 className="display-heading m-0 mt-1 text-[24px]">Unlock</h2>
+        <p className="meta-label m-0 text-leaf">RYVE Unlock</p>
+        <h2 className="display-heading m-0 mt-1 text-[24px]">Unlock Account</h2>
       </div>
-      <p className="m-0 text-sm text-mute">Enter the 24-word recovery key for this drive.</p>
+      <p className="m-0 text-sm text-mute">Enter your 24-word recovery key to unlock RYVE.</p>
       <div className="grid gap-2">
         <Label htmlFor="mnemonic-unlock" className="sr-only">
           Recovery key
@@ -46,7 +46,10 @@ export function AuthUnlockPage() {
           autoFocus
           placeholder="word1 word2 … word24"
           value={mnemonic}
-          onChange={(e) => setMnemonic(e.target.value)}
+          onChange={(e) => {
+            setMnemonic(e.target.value)
+            if (error) setError('')
+          }}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
               e.preventDefault()
@@ -55,8 +58,8 @@ export function AuthUnlockPage() {
           }}
         />
       </div>
-      {error ? <p className="m-0 font-mono text-sm text-danger">{error}</p> : null}
-      <div className="flex flex-wrap gap-2">
+      {error ? <p className="m-0 font-mono text-xs text-danger">{error}</p> : null}
+      <div className="flex flex-wrap gap-2 pt-1">
         <UnlockBackButton />
         <UnlockSubmitButton busy={busy} />
       </div>

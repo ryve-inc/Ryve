@@ -1,4 +1,3 @@
-// @ts-nocheck
 import BlindPeering from 'blind-peering'
 import path from 'bare-path'
 import fs from 'bare-fs'
@@ -8,17 +7,27 @@ import idEnc from 'hypercore-id-encoding'
 const SETTINGS_FILE = 'drive-settings.json'
 const SESSION_FILE = 'drive-session.json'
 const SHARES_INDEX_FILE = 'drive-shares.json'
+const NETWORKS_FILE = 'drive-networks.json'
 
-async function readJson(file, fallback = null) {
+export type NetworkStorageItem = {
+  id: string
+  name: string
+  networkLink: string
+  networkKeyHex: string
+  topicHex: string
+  createdAt: number
+}
+
+async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     const raw = await fs.promises.readFile(file)
-    return JSON.parse(b4a.toString(raw))
+    return JSON.parse(b4a.toString(raw)) as T
   } catch {
     return fallback
   }
 }
 
-async function writeJson(file, value) {
+async function writeJson(file: string, value: unknown): Promise<void> {
   await fs.promises.mkdir(path.dirname(file), { recursive: true })
   const tmp = file + '.tmp-' + Math.random().toString(16).slice(2)
   const payload = b4a.from(JSON.stringify(value, null, 2))
@@ -26,55 +35,66 @@ async function writeJson(file, value) {
   await fs.promises.rename(tmp, file)
 }
 
-async function loadSettings(storageDir) {
+async function loadNetworks(storageDir: string): Promise<NetworkStorageItem[]> {
+  const file = path.join(storageDir, NETWORKS_FILE)
+  const list = await readJson<NetworkStorageItem[]>(file, [])
+  return Array.isArray(list) ? list : []
+}
+
+async function saveNetworks(storageDir: string, networks: NetworkStorageItem[]): Promise<void> {
+  const file = path.join(storageDir, NETWORKS_FILE)
+  await writeJson(file, networks)
+}
+
+async function loadSettings(storageDir: string): Promise<{ file: string; blindPeerKeys: string[] }> {
   const file = path.join(storageDir, SETTINGS_FILE)
-  const data = await readJson(file, { blindPeerKeys: [] })
+  const data = await readJson<{ blindPeerKeys?: string[] }>(file, { blindPeerKeys: [] })
   return { file, blindPeerKeys: Array.isArray(data.blindPeerKeys) ? data.blindPeerKeys : [] }
 }
 
-async function saveSettings(storageDir, settings) {
+async function saveSettings(storageDir: string, settings: { blindPeerKeys?: string[] }): Promise<void> {
   const file = path.join(storageDir, SETTINGS_FILE)
   await writeJson(file, { blindPeerKeys: settings.blindPeerKeys || [] })
 }
 
-async function loadSession(storageDir) {
+async function loadSession(storageDir: string): Promise<any> {
   return readJson(path.join(storageDir, SESSION_FILE), null)
 }
 
-async function saveSession(storageDir, session) {
+async function saveSession(storageDir: string, session: any): Promise<void> {
   await writeJson(path.join(storageDir, SESSION_FILE), session)
 }
 
-async function clearSession(storageDir) {
+async function clearSession(storageDir: string): Promise<void> {
   try {
     await fs.promises.unlink(path.join(storageDir, SESSION_FILE))
   } catch {}
 }
 
-async function loadSharesIndex(storageDir) {
-  const data = await readJson(path.join(storageDir, SHARES_INDEX_FILE), { shares: [] })
+async function loadSharesIndex(storageDir: string): Promise<any[]> {
+  const data = await readJson<{ shares?: any[] }>(path.join(storageDir, SHARES_INDEX_FILE), { shares: [] })
   return Array.isArray(data?.shares) ? data.shares : []
 }
 
-async function saveSharesIndex(storageDir, shares) {
+async function saveSharesIndex(storageDir: string, shares: any[]): Promise<void> {
   await writeJson(path.join(storageDir, SHARES_INDEX_FILE), { shares })
 }
 
-function normalizeBlindKeys(keys) {
-  const out = []
+function normalizeBlindKeys(keys?: string[] | null): string[] {
+  const out: string[] = []
   for (const raw of keys || []) {
     const k = String(raw || '').trim()
     if (!k) continue
     try {
       out.push(idEnc.normalize(k))
-    } catch (err) {
+    } catch (err: any) {
       console.error('Ignoring invalid blind peer key:', k, err?.message || err)
     }
   }
   return [...new Set(out)]
 }
 
-function createBlindClient(swarm, store, keys) {
+function createBlindClient(swarm: any, store: any, keys?: string[]): any {
   const normalized = normalizeBlindKeys(keys)
   if (normalized.length === 0) return null
   if (!swarm || !swarm.dht || typeof swarm.dht.on !== 'function') {
@@ -91,12 +111,11 @@ function createBlindClient(swarm, store, keys) {
   }
 }
 
-/** BlindPeering.addCore(core, target = core.key, opts) — options must be 3rd arg */
-async function pinCore(blinds, core, opts = { announce: true }) {
+async function pinCore(blinds: any, core: any, opts = { announce: true }): Promise<void> {
   if (!blinds || !core) return
   try {
     await blinds.addCore(core, core.key, opts)
-  } catch (err) {
+  } catch (err: any) {
     console.error('blind addCore failed:', err?.message || err)
   }
 }
@@ -109,7 +128,10 @@ export {
   clearSession,
   loadSharesIndex,
   saveSharesIndex,
+  loadNetworks,
+  saveNetworks,
   createBlindClient,
   normalizeBlindKeys,
   pinCore
 }
+

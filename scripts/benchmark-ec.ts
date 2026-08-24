@@ -1,4 +1,5 @@
-import { encodeBuffer, decodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from '../src/workers/erasure-coding.js'
+import { encodeBuffer, decodeBuffer, DEFAULT_EC_K, DEFAULT_EC_M } from '../src/workers/erasure-coding'
+
 
 function runBenchmark(sizeMb: number) {
   const sizeBytes = sizeMb * 1024 * 1024

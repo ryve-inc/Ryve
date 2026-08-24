@@ -1,35 +1,37 @@
-// @ts-nocheck
 import b4a from 'b4a'
 import hypercoreCrypto from 'hypercore-crypto'
 
-const GLOBAL_POOL_TOPIC_STRING = 'p2cloud:global-pool-v1'
-
 class GlobalPeerPool {
-  constructor({ swarm }) {
+  swarm: any
+  topic: Uint8Array | null
+  discovery: any
+  registeredStores: Set<any>
+
+  constructor({ swarm, topic = null }: { swarm: any; topic?: Uint8Array | null }) {
     this.swarm = swarm
-    this.topic = hypercoreCrypto.hash(b4a.from(GLOBAL_POOL_TOPIC_STRING))
+    this.topic = topic
     this.discovery = null
     this.registeredStores = new Set()
     this._onConnection = this._onConnection.bind(this)
   }
 
-  async init() {
-    if (this.discovery) return
+  async init(topic?: Uint8Array) {
+    if (topic) this.topic = topic
+    if (!this.topic || this.discovery) return
 
     // Listen for new connections to replicate registered stores
     this.swarm.on('connection', this._onConnection)
 
-    // Join the global storage pool topic as both client and server
     this.discovery = this.swarm.join(this.topic, {
       server: true,
       client: true
     })
 
-    await this.discovery.flushed()
-    console.log('[GlobalPeerPool] Joined global storage network pool')
+    await this.discovery.flushed().catch(() => {})
+    console.log('[GlobalPeerPool] Joined private storage network pool')
   }
 
-  registerStore(store) {
+  registerStore(store: any) {
     if (!store) return
     this.registeredStores.add(store)
     console.log('[GlobalPeerPool] Registered store. Active connections:', this.swarm.connections.size)
@@ -38,18 +40,18 @@ class GlobalPeerPool {
     for (const conn of this.swarm.connections) {
       try {
         store.replicate(conn)
-      } catch (err) {
+      } catch (err: any) {
         console.error('[GlobalPeerPool] Store replication error:', err?.message || err)
       }
     }
   }
 
-  unregisterStore(store) {
+  unregisterStore(store: any) {
     if (!store) return
     this.registeredStores.delete(store)
   }
 
-  _onConnection(conn) {
+  _onConnection(conn: any) {
     console.log(`[GlobalPeerPool] New peer connected! Active connections: ${this.swarm.connections.size}`)
 
     conn.on('close', () => {
@@ -60,11 +62,11 @@ class GlobalPeerPool {
     this.replicateAllStores(conn)
   }
 
-  replicateAllStores(conn) {
+  replicateAllStores(conn: any) {
     for (const store of this.registeredStores) {
       try {
         store.replicate(conn)
-      } catch (err) {
+      } catch (err: any) {
         console.error('[GlobalPeerPool] Replication error:', err?.message || err)
       }
     }
@@ -81,3 +83,4 @@ class GlobalPeerPool {
 }
 
 export { GlobalPeerPool }
+

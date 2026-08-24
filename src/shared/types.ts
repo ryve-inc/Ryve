@@ -36,24 +36,36 @@ export type DriveEntry = {
   byteLength: number
   metadata: Record<string, unknown> | null
   chunkCount?: number
+  isPrivate?: boolean
+}
+
+export type NetworkItem = {
+  id: string
+  name: string
+  networkLink: string
+  networkKeyHex: string
+  topicHex: string
+  peers: number
+  createdAt: number
+}
+
+export type NetworkInfo = {
+  networkLink: string | null
+  networkKeyHex: string | null
+  topicHex: string | null
+  joined: boolean
+  activeId: string | null
+  networks: NetworkItem[]
 }
 
 export type AppStatus = {
   unlocked: boolean
   identity: string | null
+  displayName: string | null
   driveKey: string | null
   peers: number
   blindPeerKeys: string[]
-  shares: ShareInfo[]
-}
-
-export type ShareInfo = {
-  id: string
-  name: string
-  type: 'read' | 'collab'
-  pathPrefix: string
-  writable: boolean
-  from: string | null
+  network: NetworkInfo
 }
 
 export type BridgeApi = {
@@ -85,3 +97,4 @@ declare global {
 }
 
 export {}
+

@@ -32,10 +32,12 @@ export function AuthConfirmPage() {
       }}
     >
       <div className="iris-wash -mx-6 -mt-6 rounded-t-3xl px-6 py-4">
-        <p className="meta-label m-0 text-leaf">Confirm</p>
-        <h2 className="display-heading m-0 mt-1 text-[24px]">Confirm recovery key</h2>
+        <p className="meta-label m-0 text-leaf">Step 3 of 3 · Verification</p>
+        <h2 className="display-heading m-0 mt-1 text-[24px]">Confirm 24-word key</h2>
       </div>
-      <p className="m-0 text-sm text-mute">Type or paste your recovery key to confirm.</p>
+      <p className="m-0 text-sm text-mute">
+        Type or paste your 24-word recovery key below to confirm you saved it correctly.
+      </p>
       <div className="grid gap-2">
         <Label htmlFor="mnemonic-confirm" className="sr-only">
           Recovery key
@@ -46,7 +48,10 @@ export function AuthConfirmPage() {
           autoFocus
           placeholder="word1 word2 … word24"
           value={mnemonic}
-          onChange={(e) => setMnemonic(e.target.value)}
+          onChange={(e) => {
+            setMnemonic(e.target.value)
+            if (error) setError('')
+          }}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
               e.preventDefault()
@@ -55,8 +60,8 @@ export function AuthConfirmPage() {
           }}
         />
       </div>
-      {error ? <p className="m-0 font-mono text-sm text-danger">{error}</p> : null}
-      <div className="flex flex-wrap gap-2">
+      {error ? <p className="m-0 font-mono text-xs text-danger">{error}</p> : null}
+      <div className="flex flex-wrap gap-2 pt-1">
         <ConfirmBackButton />
         <ConfirmSubmitButton busy={busy} />
       </div>

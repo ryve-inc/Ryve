@@ -1,31 +1,44 @@
-// @ts-nocheck
 import Hyperdrive from 'hyperdrive'
 import idEnc from 'hypercore-id-encoding'
 import b4a from 'b4a'
 
-import { normalizePath, joinPath, underPrefix } from './path-utils'
+import { normalizePath, joinPath } from './path-utils'
 import { uploadFile } from './uploader'
 import { downloadFile } from './downloader'
 
 class VaultDrive {
   store: any
   swarm: any
-  encryptionKey: any
+  encryptionKey: Uint8Array | string
+  networkKeyHex: string | null
+  publicCatalog: any
   blinds: any
   chunkStore: any
   drive: any
   _discovery: any
 
-  constructor({ store, swarm, encryptionKey, blinds = null, chunkStore = null }: {
+  constructor({
+    store,
+    swarm,
+    encryptionKey,
+    networkKeyHex = null,
+    publicCatalog = null,
+    blinds = null,
+    chunkStore = null
+  }: {
     store: any
     swarm: any
-    encryptionKey: any
+    encryptionKey: Uint8Array | string
+    networkKeyHex?: string | null
+    publicCatalog?: any
     blinds?: any
     chunkStore?: any
   }) {
     this.store = store
     this.swarm = swarm
     this.encryptionKey = encryptionKey
+    this.networkKeyHex = networkKeyHex
+    this.publicCatalog = publicCatalog
     this.blinds = blinds
     this.chunkStore = chunkStore
     this.drive = null
@@ -37,8 +50,6 @@ class VaultDrive {
       encryptionKey: this.encryptionKey
     })
     await this.drive.ready()
-    this._discovery = this.swarm.join(this.drive.discoveryKey, { server: true, client: true })
-    await this._discovery.flushed()
     return this
   }
 
@@ -46,13 +57,13 @@ class VaultDrive {
     return this.drive?.key
   }
 
-  get keyHex() {
+  get keyHex(): string | null {
     return this.drive ? idEnc.normalize(this.drive.key) : null
   }
 
   async list(dir = '/') {
     const folder = normalizePath(dir)
-    const names = new Map()
+    const names = new Map<string, any>()
     const stream = this.drive.list(folder, { recursive: true })
     for await (const entry of stream) {
       if (entry.key === '/.share.json') continue
@@ -63,6 +74,10 @@ class VaultDrive {
       const full = joinPath(folder, name)
       if (names.has(full)) continue
       const exact = await this.drive.entry(full)
+      const fileNetKey = exact?.value?.metadata?.networkKeyHex
+      if (fileNetKey && this.networkKeyHex && fileNetKey !== this.networkKeyHex) {
+        continue
+      }
       const isNestedOnly = rest.includes('/')
       names.set(full, {
         path: full,
@@ -70,9 +85,38 @@ class VaultDrive {
         isDirectory: exact ? !exact.value.blob && !exact.value.linkname : isNestedOnly,
         byteLength: exact?.value?.metadata?.originalSize || exact?.value?.blob?.byteLength || 0,
         metadata: exact?.value?.metadata || null,
-        chunkCount: exact?.value?.metadata?.chunks?.length || 0
+        chunkCount: exact?.value?.metadata?.chunks?.length || 0,
+        isPrivate: exact?.value?.metadata?.isPrivate !== undefined ? Boolean(exact.value.metadata.isPrivate) : true
       })
     }
+
+    // Merge public catalog files for active network
+    if (this.publicCatalog && this.networkKeyHex) {
+      try {
+        const publicFiles = await this.publicCatalog.getPublicFiles(this.networkKeyHex)
+        for (const pubFile of publicFiles) {
+          if (!pubFile || !pubFile.path) continue
+          if (pubFile.networkKeyHex && pubFile.networkKeyHex !== this.networkKeyHex) continue
+          const rest = folder === '/' ? pubFile.path.slice(1) : pubFile.path.slice(folder.length + 1)
+          if (!rest) continue
+          const name = rest.split('/')[0]
+          if (!name || name === '.keep') continue
+          const full = joinPath(folder, name)
+          if (!names.has(full)) {
+            names.set(full, {
+              path: full,
+              name,
+              isDirectory: false,
+              byteLength: pubFile.originalSize || pubFile.byteLength || 0,
+              metadata: pubFile,
+              chunkCount: pubFile.chunks?.length || 0,
+              isPrivate: false
+            })
+          }
+        }
+      } catch {}
+    }
+
     return [...names.values()].sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -83,19 +127,22 @@ class VaultDrive {
     const p = normalizePath(dirPath)
     const keep = p === '/' ? '/.keep' : joinPath(p, '.keep')
     await this.drive.put(keep, b4a.alloc(0), {
-      metadata: { directoryMarker: true }
+      metadata: { directoryMarker: true, networkKeyHex: this.networkKeyHex }
     })
     return { path: p }
   }
 
-  async upload(localPath: string, destPath: string, mime: string | null = null) {
+  async upload(localPath: string, destPath: string, mime: string | null = null, isPrivate = true) {
     return uploadFile({
       drive: this.drive,
       chunkStore: this.chunkStore,
       encryptionKey: this.encryptionKey,
+      networkKeyHex: this.networkKeyHex,
+      publicCatalog: this.publicCatalog,
       localPath,
       destPath,
-      mime
+      mime,
+      isPrivate
     })
   }
 
@@ -104,6 +151,8 @@ class VaultDrive {
       drive: this.drive,
       chunkStore: this.chunkStore,
       encryptionKey: this.encryptionKey,
+      networkKeyHex: this.networkKeyHex,
+      publicCatalog: this.publicCatalog,
       entryPath,
       destLocalPath
     })
@@ -112,6 +161,9 @@ class VaultDrive {
   async delete(entryPath: string) {
     const p = normalizePath(entryPath)
     await this.drive.del(p)
+    if (this.publicCatalog && this.networkKeyHex) {
+      await this.publicCatalog.removePublicFile(this.networkKeyHex, p).catch(() => {})
+    }
     return { path: p }
   }
 
@@ -145,3 +197,4 @@ class VaultDrive {
 }
 
 export { VaultDrive }
+

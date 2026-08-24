@@ -1,5 +1,3 @@
-// @ts-nocheck
-
 const PRUNE_TIMEOUT_MS = 60_000 // 60 seconds timeout
 
 /**
@@ -7,7 +5,7 @@ const PRUNE_TIMEOUT_MS = 60_000 // 60 seconds timeout
  * Tracks block replication across connected network peers and clears local chunks
  * once peers have received the data blocks.
  */
-async function clearLocalChunksAfterReplication(drive, entryPath, swarm = null) {
+async function clearLocalChunksAfterReplication(drive: any, entryPath: string, swarm: any = null) {
   await drive.ready()
 
   if (!drive.blobs) {
@@ -29,7 +27,7 @@ async function clearLocalChunksAfterReplication(drive, entryPath, swarm = null) 
   const end = blob.blockOffset + blob.blockLength
   const blobsCore = drive.blobs.core
 
-  const uploaded = new Set()
+  const uploaded = new Set<number>()
 
   const checkPeers = () => {
     if (blobsCore.peers) {
@@ -71,7 +69,7 @@ async function clearLocalChunksAfterReplication(drive, entryPath, swarm = null) 
   const activePeers = getActivePeerCount()
   console.log(`[Uploader:Pruner] Tracking ${blob.blockLength} blocks for ${entryPath} [${start} - ${end}). Active peers: ${activePeers}`)
 
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     let resolved = false
 
     const finish = async () => {
@@ -83,7 +81,7 @@ async function clearLocalChunksAfterReplication(drive, entryPath, swarm = null) 
     }
 
     // Listens for live block upload events to remote peers
-    const onUpload = (index) => {
+    const onUpload = (index: number) => {
       if (index >= start && index < end) {
         uploaded.add(index)
         console.log(`[Uploader:Pruner] Block ${index} sent to peer. Progress: ${uploaded.size}/${blob.blockLength}`)
@@ -132,3 +130,4 @@ async function clearLocalChunksAfterReplication(drive, entryPath, swarm = null) 
 }
 
 export { clearLocalChunksAfterReplication }
+

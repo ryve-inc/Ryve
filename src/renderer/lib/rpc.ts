@@ -10,8 +10,10 @@ const pending = new Map<
 let rpcSeq = 0
 
 export function getBridge(): BridgeApi {
+  if (!window.bridge) throw new Error('Electron bridge API unavailable')
   return window.bridge
 }
+
 
 export function rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   const bridge = getBridge()

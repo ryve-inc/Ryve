@@ -1,4 +1,6 @@
-import { InviteModal } from '@/components/invite-modal'
+import { CreateNetworkModal } from '@/components/create-network-modal'
+import { JoinNetworkModal } from '@/components/join-network-modal'
+import { NetworkInfoModal } from '@/components/network-info-modal'
 import { PreviewModal } from '@/components/preview-modal'
 import { PromptDialog } from '@/components/prompt-dialog'
 import { Toast } from '@/components/toast'
@@ -25,12 +27,15 @@ function AppViews() {
       <Atmosphere />
       <div className="app-surface">{view === 'auth' ? <AuthView /> : <AppShell />}</div>
       <Toast />
-      <InviteModal />
+      <CreateNetworkModal />
+      <JoinNetworkModal />
+      <NetworkInfoModal />
       <PromptDialog />
       <PreviewModal />
     </>
   )
 }
+
 
 export function App() {
   return (

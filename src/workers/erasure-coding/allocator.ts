@@ -1,13 +1,33 @@
-// @ts-nocheck
-import { DEFAULT_EC_K, DEFAULT_EC_M } from './rs-instance'
 import type { ChunkPlacementResult, FaultToleranceStatus } from './types'
 
+export const DEFAULT_EC_K = 2
+export const DEFAULT_EC_M = 2
+
+export interface ModeParameters {
+  K: number
+  M: number
+  modeName: 'Extreme' | 'High' | 'Normal'
+}
+
 /**
- * Distributes N chunks (Data + Parity) across P online peers by interleaving
- * data and parity chunks in a single round-robin pass to maximize peer diversity.
- *
- * Explicitly evaluates maxChunksPerPeer against parity budget M to flag
- * single-point-of-failure risk states.
+ * Calculates adaptive (K, M) parameters based on connected peer count P.
+ */
+export function getAdaptiveParams(P: number): ModeParameters {
+  if (P <= 1) {
+    return { K: 1, M: 1, modeName: 'Extreme' }
+  } else if (P <= 2) {
+    return { K: 1, M: 2, modeName: 'Extreme' }
+  } else if (P <= 4) {
+    return { K: 2, M: 2, modeName: 'High' }
+  } else {
+    const K = Math.ceil(P / 2)
+    const M = Math.max(2, Math.floor(P / 2))
+    return { K, M, modeName: 'Normal' }
+  }
+}
+
+/**
+ * Distributes N chunks across P online peers using interleaved sliding group assignment.
  */
 export function allocateChunksToPeers(
   chunks: Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }>,
@@ -17,7 +37,7 @@ export function allocateChunksToPeers(
 ): ChunkPlacementResult {
   const N = chunks.length
   const P = peers.length
-  const distribution = new Map<any, any[]>()
+  const distribution = new Map<any, Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }>>()
   const warnings: string[] = []
 
   for (const peer of peers) {
@@ -36,16 +56,16 @@ export function allocateChunksToPeers(
 
   if (P === 1) {
     distribution.get(peers[0])!.push(...chunks)
-    warnings.push('Only 1 peer online. Remote fault tolerance is NONE. File relies on local cache.')
+    warnings.push('Extreme Mode: 1 peer online. Single-peer 100% full recovery enabled.')
     return {
       distribution,
-      faultTolerance: 'none',
+      faultTolerance: 'full',
       warnings,
       maxChunksPerPeer: N
     }
   }
 
-  // Interleave data and parity chunks before round-robin distribution
+  // Interleaved sliding round-robin distribution
   const dataChunks = chunks.filter((c) => !c.isParity)
   const parityChunks = chunks.filter((c) => c.isParity)
 
@@ -56,41 +76,15 @@ export function allocateChunksToPeers(
     if (i < parityChunks.length) interleaved.push(parityChunks[i])
   }
 
-  if (P === 2) {
-    // For 2 peers, assign exactly K=4 interleaved chunks to each peer with sliding offset
-    // Peer 0 gets chunks 0..K-1, Peer 1 gets chunks 2..K+1
-    const targetPerPeer = K
-    const step = Math.floor(N / P)
-    peers.forEach((peer, pIdx) => {
-      const peerList = distribution.get(peer)!
-      const startOffset = (pIdx * step) % N
-      for (let i = 0; i < targetPerPeer; i++) {
-        const chunkIndex = (startOffset + i) % N
-        const chunk = interleaved[chunkIndex]
-        if (!peerList.some((c) => c.index === chunk.index)) {
-          peerList.push(chunk)
-        }
-      }
-    })
-  } else {
-    // For P >= 3, standard interleaved round-robin distribution (N / P chunks per peer)
-    interleaved.forEach((chunk, i) => {
-      const peerIndex = i % P
-      distribution.get(peers[peerIndex])!.push(chunk)
-    })
-  }
+  interleaved.forEach((chunk, i) => {
+    const peerIndex = i % P
+    distribution.get(peers[peerIndex])!.push(chunk)
+  })
 
   const maxChunksPerPeer = Math.max(...Array.from(distribution.values()).map((list) => list.length))
+  const faultTolerance: FaultToleranceStatus = P >= 2 ? 'full' : 'degraded'
 
-  let faultTolerance: FaultToleranceStatus = 'full'
-
-  if (P >= 3) {
-    faultTolerance = 'full'
-    warnings.push(`FULL: Distributed across ${P} peers (${maxChunksPerPeer} chunks/peer). 1-peer drop is 100% safe.`)
-  } else if (P === 2) {
-    faultTolerance = 'degraded'
-    warnings.push(`DEGRADED: Distributed 4 chunks per peer across 2 peers. 1-peer drop is 100% safe (saved 33% bandwidth).`)
-  }
+  warnings.push(`APRE Active: Distributed across ${P} peers. Need ${K} chunks to recover.`)
 
   return {
     distribution,

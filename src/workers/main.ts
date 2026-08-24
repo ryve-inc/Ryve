@@ -73,7 +73,13 @@ const chunkStore = new GlobalChunkStore({
   swarm,
   storageDir,
   publicCatalog,
-  getNetworkKeyHex: () => state.networkKeyHex
+  getNetworkKeyHex: () => state.networkKeyHex,
+  onPublicCatalogUpdated: (netKey) => {
+    if (netKey === state.networkKeyHex) {
+      console.log(`[Main:Event] Public catalog updated for active network ${netKey.slice(0, 12)}. Emitting event to UI.`)
+      emit({ type: 'event', name: 'public-catalog-updated', data: { networkKeyHex: netKey } })
+    }
+  }
 })
 chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
 

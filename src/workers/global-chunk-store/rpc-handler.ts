@@ -9,7 +9,8 @@ export function setupConnectionRpc(
   swarm: any,
   cacheDir: string,
   publicCatalog?: any,
-  getNetworkKeyHex?: () => string | null
+  getNetworkKeyHex?: () => string | null,
+  onPublicCatalogUpdated?: (networkKeyHex: string) => void
 ) {
   if (conn._chunkRpc) return
 
@@ -55,6 +56,9 @@ export function setupConnectionRpc(
     if (!req || !req.manifest || !req.manifest.networkKeyHex || !publicCatalog) return { ok: false }
     await publicCatalog.addPublicFile(req.manifest.networkKeyHex, req.manifest)
     console.log(`[PublicCatalog:RPC] Received public file announcement for ${req.manifest.path} from peer`)
+    if (typeof onPublicCatalogUpdated === 'function') {
+      onPublicCatalogUpdated(req.manifest.networkKeyHex)
+    }
     return { ok: true }
   })
 

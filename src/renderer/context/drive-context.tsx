@@ -751,6 +751,9 @@ export function DriveProvider({ children }: { children: ReactNode }) {
             setView('app')
           }
         }
+        if (msg.name === 'public-catalog-updated') {
+          refreshFiles()
+        }
         if (msg.name === 'ready') {
           console.log('worker ready', msg.data)
         }

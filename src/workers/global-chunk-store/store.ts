@@ -19,13 +19,19 @@ class GlobalChunkStore {
   discovery: any
   publicCatalog: any
   getNetworkKeyHex: (() => string | null) | null
+  onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
 
   constructor({
     swarm,
     storageDir,
     publicCatalog = null,
-    getNetworkKeyHex = null
-  }: GlobalChunkStoreOptions & { publicCatalog?: any; getNetworkKeyHex?: (() => string | null) | null }) {
+    getNetworkKeyHex = null,
+    onPublicCatalogUpdated = null
+  }: GlobalChunkStoreOptions & {
+    publicCatalog?: any
+    getNetworkKeyHex?: (() => string | null) | null
+    onPublicCatalogUpdated?: ((networkKeyHex: string) => void) | null
+  }) {
     this.swarm = swarm
     this.storageDir = storageDir
     this.cacheDir = path.join(storageDir, '.peer-cache')
@@ -33,6 +39,7 @@ class GlobalChunkStore {
     this.discovery = null
     this.publicCatalog = publicCatalog
     this.getNetworkKeyHex = getNetworkKeyHex
+    this.onPublicCatalogUpdated = onPublicCatalogUpdated
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -73,7 +80,8 @@ class GlobalChunkStore {
       this.swarm,
       this.cacheDir,
       this.publicCatalog,
-      this.getNetworkKeyHex || undefined
+      this.getNetworkKeyHex || undefined,
+      this.onPublicCatalogUpdated || undefined
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -87,22 +95,29 @@ class GlobalChunkStore {
     try {
       const res = await rpc.request('get-public-catalog', {}, { timeout: 10000 })
       if (res && Array.isArray(res.manifests) && res.manifests.length > 0) {
-        await this.publicCatalog.mergeRemoteManifests(networkKeyHex, res.manifests)
-        console.log(`[PublicCatalog:Sync] Merged ${res.manifests.length} public file manifest(s) from peer`)
+        const added = await this.publicCatalog.mergeRemoteManifests(networkKeyHex, res.manifests)
+        if (added) {
+          console.log(`[PublicCatalog:Sync] Merged ${res.manifests.length} public file manifest(s) from peer`)
+          if (this.onPublicCatalogUpdated) {
+            this.onPublicCatalogUpdated(networkKeyHex)
+          }
+        }
       }
     } catch {}
   }
 
+  _getActiveRpcConnections(): any[] {
+    return Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+  }
+
   async syncPublicCatalog(networkKeyHex: string) {
-    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
-    for (const conn of connections) {
+    for (const conn of this._getActiveRpcConnections()) {
       await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
     }
   }
 
   async broadcastPublicFile(manifest: any) {
-    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
-    for (const conn of connections) {
+    for (const conn of this._getActiveRpcConnections()) {
       const rpc = (conn as any)._chunkRpc
       if (!rpc || rpc.closed) continue
       try {
@@ -134,10 +149,14 @@ class GlobalChunkStore {
 
       for (const chunk of peerChunks) {
         try {
-          await rpc.request('store-chunk', {
-            hash: chunk.hash,
-            data: b4a.toString(chunk.buffer, 'hex')
-          })
+          await rpc.request(
+            'store-chunk',
+            {
+              hash: chunk.hash,
+              data: b4a.toString(chunk.buffer, 'hex')
+            },
+            { timeout: 60000 }
+          )
           offloadedHashes.add(chunk.hash)
         } catch (err: any) {
           console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
@@ -202,7 +221,7 @@ class GlobalChunkStore {
   /**
    * Fetches an encrypted chunk using ProtomuxRPC querying.
    */
-  async fetchChunk(hash: string, timeoutMs = 15000) {
+  async fetchChunk(hash: string, timeoutMs = 60000) {
     // 1. Check local .peer-cache first
     const localChunkPath = path.join(this.cacheDir, hash + '.bin')
     try {
@@ -211,7 +230,7 @@ class GlobalChunkStore {
     } catch {}
 
     // 2. Query online network peers over Protomux RPC
-    const connections = Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+    const connections = this._getActiveRpcConnections()
 
     if (connections.length === 0) {
       throw new Error(`Chunk ${hash.slice(0, 12)} unavailable: No online peers connected.`)

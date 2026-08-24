@@ -38,26 +38,44 @@ export async function uploadFile({
   // 1. Encrypt raw file buffer locally with effective key
   const { encrypted, nonce } = encryptBuffer(rawBuffer, effectiveKey)
 
-  // 2. Perform Reed-Solomon Erasure Coding (K=4 data shards, M=2 parity shards)
-  const ecResult = encodeBuffer(encrypted, DEFAULT_EC_K, DEFAULT_EC_M)
-  const chunks: Array<{ index: number; isParity: boolean; buffer: Uint8Array; hash: string }> = []
-  const chunkMetadata: Array<{ index: number; isParity: boolean; offset: number; length: number; hash: string }> = []
+  // 2. Slice encrypted buffer into 1MB blocks and perform Reed-Solomon Erasure Coding per block
+  const MAX_BLOCK_SIZE = 1 * 1024 * 1024 // 1 MB per block
+  const totalEncrypted = encrypted.byteLength
+  const numBlocks = Math.ceil(totalEncrypted / MAX_BLOCK_SIZE) || 1
+  const chunks: Array<{ index: number; blockIndex: number; shardIndex: number; isParity: boolean; buffer: Uint8Array; hash: string }> = []
+  const chunkMetadata: Array<{ index: number; blockIndex: number; shardIndex: number; isParity: boolean; offset: number; length: number; hash: string }> = []
 
-  for (const shard of ecResult.shards) {
-    const hash = hashChunk(shard.buffer)
-    chunks.push({
-      index: shard.index,
-      isParity: shard.isParity,
-      buffer: shard.buffer,
-      hash
-    })
-    chunkMetadata.push({
-      index: shard.index,
-      isParity: shard.isParity,
-      offset: shard.index * ecResult.chunkSize,
-      length: shard.buffer.byteLength,
-      hash
-    })
+  let globalIndex = 0
+  let sampleChunkSize = 0
+
+  for (let b = 0; b < numBlocks; b++) {
+    const start = b * MAX_BLOCK_SIZE
+    const end = Math.min(start + MAX_BLOCK_SIZE, totalEncrypted)
+    const blockBuf = encrypted.subarray(start, end)
+    const ecResult = encodeBuffer(blockBuf, DEFAULT_EC_K, DEFAULT_EC_M)
+    sampleChunkSize = ecResult.chunkSize
+
+    for (const shard of ecResult.shards) {
+      const hash = hashChunk(shard.buffer)
+      chunks.push({
+        index: globalIndex,
+        blockIndex: b,
+        shardIndex: shard.index,
+        isParity: shard.isParity,
+        buffer: shard.buffer,
+        hash
+      })
+      chunkMetadata.push({
+        index: globalIndex,
+        blockIndex: b,
+        shardIndex: shard.index,
+        isParity: shard.isParity,
+        offset: start + shard.index * ecResult.chunkSize,
+        length: shard.buffer.byteLength,
+        hash
+      })
+      globalIndex++
+    }
   }
 
   // 3. Offload chunks to network nodes (distributed equally across uploader and peers)
@@ -76,10 +94,11 @@ export async function uploadFile({
     encryptedSize: encrypted.byteLength,
     nonce,
     erasureCoding: {
-      k: ecResult.k,
-      m: ecResult.m,
-      chunkSize: ecResult.chunkSize,
-      paddedSize: ecResult.paddedSize,
+      k: DEFAULT_EC_K,
+      m: DEFAULT_EC_M,
+      chunkSize: sampleChunkSize,
+      blockSize: MAX_BLOCK_SIZE,
+      numBlocks,
       faultTolerance: allocation ? allocation.faultTolerance : 'none'
     },
     chunks: chunkMetadata

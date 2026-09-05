@@ -142,8 +142,24 @@ export function setupConnectionRpc(
     return { ok: true }
   })
 
+  // 7. Remove public file strictly scoped and verified
+  rpc.respond('remove-public-file', async (req: any) => {
+    if (!req || !req.path || !req.networkKeyHex || !publicCatalog) return { ok: false }
+    const netKey = req.networkKeyHex
+    if (isNetworkJoined && !isNetworkJoined(netKey)) {
+      return { ok: false }
+    }
+    await publicCatalog.removePublicFile(netKey, req.path)
+    console.log(`[PublicCatalog:RPC] Received public file removal for ${req.path} on network ${netKey.slice(0, 12)}`)
+    if (typeof onPublicCatalogUpdated === 'function') {
+      onPublicCatalogUpdated(netKey)
+    }
+    return { ok: true }
+  })
+
   conn.on('close', () => {
     console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${swarm.connections.size}`)
   })
 }
+
 

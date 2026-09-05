@@ -756,3 +756,11 @@ handlers.getStatus = async () => {
   await autoUnlockPromise
   return originalGetStatus({})
 }
+
+const originalList = handlers.list
+handlers.list = async (params: any) => {
+  await autoUnlockPromise
+  if (!state.vault) return []
+  return originalList(params)
+}
+

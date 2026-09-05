@@ -152,15 +152,37 @@ export async function downloadFile({
   await fs.promises.mkdir(path.dirname(finalDest), { recursive: true })
   await fs.promises.writeFile(finalDest, decryptedBuffer)
 
-  // Purge temporary chunk cache from local disk to free up storage after retrieval
-  if (chunkStore && meta.chunks && Array.isArray(meta.chunks)) {
-    const hashesToPurge = meta.chunks.map((c: any) => c.hash).filter(Boolean)
-    await chunkStore.purgeChunks(hashesToPurge)
-    console.log(`[User:Download:Cleanup] Purged ${hashesToPurge.length} temporary chunk(s) from local cache after retrieval.`)
+  const isPublic = isPublicFile || meta.isPrivate === false
+
+  if (isPublic && chunkStore && meta.chunks) {
+    // For Public Files: Do NOT purge chunks. Seed fetched chunks & offload to online network peers!
+    console.log(`[User:Download:PublicSeeding] Public file downloaded. Seeding chunks to network peers...`)
+    try {
+      const k = meta.erasureCoding?.k || 2
+      const m = meta.erasureCoding?.m || 2
+      const seedChunkList = meta.chunks
+        .map((c: any) => ({
+          index: c.index,
+          blockIndex: c.blockIndex,
+          shardIndex: c.shardIndex,
+          isParity: c.isParity,
+          buffer: fetchedBuffers.get(c.hash) || null,
+          hash: c.hash
+        }))
+        .filter((c: any) => c.buffer && c.buffer.byteLength > 0)
+
+      if (seedChunkList.length > 0) {
+        await chunkStore.offloadChunks(seedChunkList, k, m, networkKeyHex)
+      }
+    } catch (err: any) {
+      console.warn(`[User:Download:PublicSeeding] Public seeding offload warning:`, err?.message || err)
+    }
+  } else if (chunkStore && meta.chunks) {
+    // For Private Files: Purge temporary chunk cache from local disk to save space
+    await chunkStore.purgeChunks(meta.chunks.map((c: any) => c.hash))
   }
 
   console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
-
 
   return { path: p, destLocalPath: finalDest, verified: true }
 }

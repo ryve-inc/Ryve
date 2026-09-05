@@ -131,14 +131,18 @@ class GlobalChunkStore {
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
-      if (netKey) this.syncPeerCatalog(conn, netKey).catch(() => {})
+      if (netKey) {
+        this.syncPeerCatalog(conn, netKey).catch(() => {})
+        setTimeout(() => {
+          this.syncPeerCatalog(conn, netKey).catch(() => {})
+        }, 1000)
+      }
     }
   }
 
   async syncPeerCatalog(conn: any, networkKeyHex: string) {
     const rpc = (conn as any)._chunkRpc
     if (!rpc || rpc.closed || !this.publicCatalog || !networkKeyHex) return
-    if (!this.isConnInNetwork(conn, networkKeyHex)) return
 
     try {
       const res = await rpc.request('get-public-catalog', { networkKeyHex }, { timeout: 10000 })
@@ -162,7 +166,8 @@ class GlobalChunkStore {
   }
 
   async syncPublicCatalog(networkKeyHex: string) {
-    const peers = this.getPeersForNetwork(networkKeyHex)
+    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
+    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
     for (const conn of peers) {
       await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
     }
@@ -171,7 +176,8 @@ class GlobalChunkStore {
   async broadcastPublicFile(manifest: any) {
     if (!manifest || !manifest.networkKeyHex) return
     const netKey = manifest.networkKeyHex
-    const targetPeers = this.getPeersForNetwork(netKey)
+    const candidatePeers = this.getPeersForNetwork(netKey)
+    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
 
     for (const conn of targetPeers) {
       const rpc = (conn as any)._chunkRpc
@@ -183,6 +189,24 @@ class GlobalChunkStore {
       }
     }
   }
+
+  async broadcastRemovePublicFile(entryPath: string, networkKeyHex: string) {
+    if (!entryPath || !networkKeyHex) return
+    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
+    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
+
+    for (const conn of targetPeers) {
+      const rpc = (conn as any)._chunkRpc
+      if (!rpc || rpc.closed) continue
+      try {
+        await rpc.request('remove-public-file', { path: entryPath, networkKeyHex }, { timeout: 5000 })
+      } catch (err: any) {
+        console.warn(`[PublicCatalog:Broadcast] Failed to broadcast public file removal to peer:`, err?.message || err)
+      }
+    }
+  }
+
+
 
   /**
    * Helper function to send allocated chunks over RPC to remote peers,
@@ -282,9 +306,17 @@ class GlobalChunkStore {
       try {
         await fs.promises.chmod(localPath, 0o666).catch(() => {})
         await fs.promises.unlink(localPath)
-      } catch {}
+        console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)}`)
+      } catch (err) {
+        try {
+          await fs.promises.chmod(localPath, 0o777).catch(() => {})
+          await fs.promises.unlink(localPath)
+          console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)} (fallback)`)
+        } catch {}
+      }
     }
   }
+
 
   /**
    * Purges specified chunk hashes from local storage and sends an RPC deletion request

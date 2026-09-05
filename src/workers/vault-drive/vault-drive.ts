@@ -160,12 +160,36 @@ class VaultDrive {
 
   async delete(entryPath: string) {
     const p = normalizePath(entryPath)
+    await this.drive.ready()
+    let chunkHashes: string[] = []
+
+    try {
+      const entry = await this.drive.entry(p)
+      if (entry?.value?.metadata?.chunks && Array.isArray(entry.value.metadata.chunks)) {
+        chunkHashes = entry.value.metadata.chunks.map((c: any) => c.hash).filter(Boolean)
+      } else if (this.publicCatalog && this.networkKeyHex) {
+        const pubManifest = await this.publicCatalog.getPublicManifest(this.networkKeyHex, p)
+        if (pubManifest?.chunks && Array.isArray(pubManifest.chunks)) {
+          chunkHashes = pubManifest.chunks.map((c: any) => c.hash).filter(Boolean)
+        }
+      }
+    } catch {}
+
     await this.drive.del(p)
     if (this.publicCatalog && this.networkKeyHex) {
       await this.publicCatalog.removePublicFile(this.networkKeyHex, p).catch(() => {})
     }
+
+    if (chunkHashes.length > 0 && this.chunkStore) {
+      console.log(`[VaultDrive:Delete] Purging & broadcasting deletion for ${chunkHashes.length} chunk(s) associated with ${p}`)
+      await this.chunkStore.broadcastDeleteChunks(chunkHashes, this.networkKeyHex).catch((err: any) => {
+        console.warn(`[VaultDrive:Delete] Broadcast delete warning:`, err?.message || err)
+      })
+    }
+
     return { path: p }
   }
+
 
   async getManifest(entryPath: string) {
     const p = normalizePath(entryPath)

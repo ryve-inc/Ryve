@@ -10,7 +10,7 @@ import paparam from 'paparam'
 
 const { app, BrowserWindow, ipcMain, dialog, clipboard } = electron
 const { isMac, isLinux, isWindows } = whichRuntime
-const { command, flag } = paparam
+const { command, flag, arg } = paparam
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -31,16 +31,22 @@ const cmd = command(
   appName,
   flag('--storage <dir>', 'pass custom storage to pear-runtime'),
   flag('--no-updates', 'start without OTA updates'),
-  flag('--no-sandbox', 'start without Chromium sandbox').hide()
+  flag('--no-sandbox', 'start without Chromium sandbox').hide(),
+  arg('[extraStorage]', 'optional positional storage path')
 )
 
-cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
+try {
+  cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
+} catch (err: any) {
+  console.warn('[CLI] Warning parsing args:', err?.message || err)
+}
 
-const rawPearStore = cmd.flags.storage as string | undefined
+const rawPearStore = (cmd.flags.storage || cmd.args.extraStorage) as string | undefined
 const pearStore = rawPearStore ? path.resolve(rawPearStore) : undefined
 const updates = cmd.flags.updates
 
 if (pearStore) app.setPath('userData', pearStore)
+
 
 function getAppPath(): string | null {
   if (!app.isPackaged) return null

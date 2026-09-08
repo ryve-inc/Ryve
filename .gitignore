@@ -60,3 +60,4 @@ dist/
 *.swp
 .idea/
 .vscode/
+peer*/

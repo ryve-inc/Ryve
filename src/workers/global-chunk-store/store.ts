@@ -131,14 +131,18 @@ class GlobalChunkStore {
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
-      if (netKey) this.syncPeerCatalog(conn, netKey).catch(() => {})
+      if (netKey) {
+        this.syncPeerCatalog(conn, netKey).catch(() => {})
+        setTimeout(() => {
+          this.syncPeerCatalog(conn, netKey).catch(() => {})
+        }, 1000)
+      }
     }
   }
 
   async syncPeerCatalog(conn: any, networkKeyHex: string) {
     const rpc = (conn as any)._chunkRpc
     if (!rpc || rpc.closed || !this.publicCatalog || !networkKeyHex) return
-    if (!this.isConnInNetwork(conn, networkKeyHex)) return
 
     try {
       const res = await rpc.request('get-public-catalog', { networkKeyHex }, { timeout: 10000 })
@@ -162,7 +166,8 @@ class GlobalChunkStore {
   }
 
   async syncPublicCatalog(networkKeyHex: string) {
-    const peers = this.getPeersForNetwork(networkKeyHex)
+    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
+    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
     for (const conn of peers) {
       await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
     }
@@ -171,7 +176,8 @@ class GlobalChunkStore {
   async broadcastPublicFile(manifest: any) {
     if (!manifest || !manifest.networkKeyHex) return
     const netKey = manifest.networkKeyHex
-    const targetPeers = this.getPeersForNetwork(netKey)
+    const candidatePeers = this.getPeersForNetwork(netKey)
+    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
 
     for (const conn of targetPeers) {
       const rpc = (conn as any)._chunkRpc
@@ -183,6 +189,24 @@ class GlobalChunkStore {
       }
     }
   }
+
+  async broadcastRemovePublicFile(entryPath: string, networkKeyHex: string) {
+    if (!entryPath || !networkKeyHex) return
+    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
+    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
+
+    for (const conn of targetPeers) {
+      const rpc = (conn as any)._chunkRpc
+      if (!rpc || rpc.closed) continue
+      try {
+        await rpc.request('remove-public-file', { path: entryPath, networkKeyHex }, { timeout: 5000 })
+      } catch (err: any) {
+        console.warn(`[PublicCatalog:Broadcast] Failed to broadcast public file removal to peer:`, err?.message || err)
+      }
+    }
+  }
+
+
 
   /**
    * Helper function to send allocated chunks over RPC to remote peers,
@@ -224,10 +248,13 @@ class GlobalChunkStore {
     // Purge local chunk files NOT assigned to self that were sent to remote peers or unassigned
     let purgedCount = 0
     for (const chunk of chunkList) {
+      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
       if (!selfAssignedHashes.has(chunk.hash)) {
-        const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+        await fs.promises.chmod(localPath, 0o666).catch(() => {})
         await fs.promises.unlink(localPath).catch(() => {})
         purgedCount++
+      } else {
+        await fs.promises.chmod(localPath, 0o444).catch(() => {})
       }
     }
 
@@ -240,10 +267,11 @@ class GlobalChunkStore {
    * Erasure Coding chunk offloading strictly distributed only among peers of the specified network.
    */
   async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, networkKeyHex?: string | null) {
-    // 1. Save all chunks to local peer cache first
+    // 1. Save all chunks to local peer cache first (Read-Only)
     for (const chunk of chunkList) {
       const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
       await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
+      await fs.promises.chmod(localPath, 0o444).catch(() => {})
     }
 
     const selfNode = { isSelf: true }
@@ -262,6 +290,9 @@ class GlobalChunkStore {
     // 2. Distribute chunks to remote network peers via RPC & prune unassigned local chunk files
     await this._distributeAndPruneChunks(chunkList, allocation, networkKeyHex)
 
+    // 3. Prune cache if quota is exceeded
+    this.pruneStorageQuota().catch(() => {})
+
     return allocation
   }
 
@@ -272,19 +303,102 @@ class GlobalChunkStore {
     for (const hash of hashes) {
       if (!hash) continue
       const localPath = path.join(this.cacheDir, hash + '.bin')
-      await fs.promises.unlink(localPath).catch(() => {})
+      try {
+        await fs.promises.chmod(localPath, 0o666).catch(() => {})
+        await fs.promises.unlink(localPath)
+        console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)}`)
+      } catch (err) {
+        try {
+          await fs.promises.chmod(localPath, 0o777).catch(() => {})
+          await fs.promises.unlink(localPath)
+          console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)} (fallback)`)
+        } catch {}
+      }
     }
+  }
+
+
+  /**
+   * Purges specified chunk hashes from local storage and sends an RPC deletion request
+   * to connected network peers to free up peer storage.
+   */
+  async broadcastDeleteChunks(hashes: string[], networkKeyHex?: string | null) {
+    if (!hashes || hashes.length === 0) return
+    // 1. Purge locally first
+    await this.purgeChunks(hashes)
+
+    // 2. Broadcast RPC delete request to connected network peers
+    const peers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    let notifiedPeers = 0
+    for (const conn of peers) {
+      const rpc = (conn as any)._chunkRpc
+      if (!rpc || rpc.closed) continue
+      try {
+        await rpc.request('delete-chunks', { hashes, networkKeyHex: networkKeyHex || undefined }, { timeout: 10000 })
+        notifiedPeers++
+      } catch (err: any) {
+        console.warn(`[ChunkStore:DeleteRPC] Failed to request chunk deletion from peer:`, err?.message || err)
+      }
+    }
+    console.log(`[ChunkStore:DeleteRPC] Broadcasted deletion for ${hashes.length} chunk(s) to ${notifiedPeers} online peer(s).`)
+  }
+
+  /**
+   * Automatically prunes oldest chunk files if local cache exceeds max storage bytes.
+   */
+  async pruneStorageQuota(maxBytes = 500 * 1024 * 1024) {
+    try {
+      const files = await fs.promises.readdir(this.cacheDir)
+      const chunkFiles: { name: string; path: string; size: number; mtime: number }[] = []
+      let totalSize = 0
+
+      for (const name of files) {
+        if (!name.endsWith('.bin')) continue
+        const filePath = path.join(this.cacheDir, name)
+        try {
+          const st = await fs.promises.stat(filePath)
+          chunkFiles.push({ name, path: filePath, size: st.size, mtime: st.mtimeMs })
+          totalSize += st.size
+        } catch {}
+      }
+
+      if (totalSize <= maxBytes) return
+
+      // Sort by mtime ascending (oldest first)
+      chunkFiles.sort((a, b) => a.mtime - b.mtime)
+
+      const targetSize = maxBytes * 0.8
+      let freedBytes = 0
+
+      for (const file of chunkFiles) {
+        if (totalSize - freedBytes <= targetSize) break
+        try {
+          await fs.promises.chmod(file.path, 0o666).catch(() => {})
+          await fs.promises.unlink(file.path)
+          freedBytes += file.size
+        } catch {}
+      }
+
+      console.log(`[ChunkStore:Quota] Storage quota exceeded (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(maxBytes / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of oldest chunks.`)
+    } catch {}
   }
 
   /**
    * Fetches an encrypted chunk from peers belonging to this network.
    */
   async fetchChunk(hash: string, networkKeyHex?: string | null, timeoutMs = 60000) {
-    // 1. Check local .peer-cache first
+    // 1. Check local .peer-cache first with integrity validation
     const localChunkPath = path.join(this.cacheDir, hash + '.bin')
     try {
       const localBuf = await fs.promises.readFile(localChunkPath)
-      return localBuf
+      const localHash = b4a.toString(hypercoreCrypto.hash(localBuf), 'hex')
+      if (localHash === hash) {
+        return localBuf
+      } else {
+        console.warn(`[ChunkStore:Fetch] ⚠️ Local chunk ${hash.slice(0, 12)} corrupted/tampered on disk! Purging local file.`)
+        await fs.promises.chmod(localChunkPath, 0o666).catch(() => {})
+        await fs.promises.unlink(localChunkPath).catch(() => {})
+      }
     } catch {}
 
     // 2. Query network peers over Protomux RPC
@@ -323,3 +437,4 @@ class GlobalChunkStore {
 }
 
 export { GlobalChunkStore }
+

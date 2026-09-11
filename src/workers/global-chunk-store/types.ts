@@ -11,4 +11,6 @@ export type GlobalChunkStoreOptions = {
   getJoinedNetworkKeys?: (() => string[]) | null
   isNetworkJoined?: ((networkKeyHex: string) => boolean) | null
   onPublicCatalogUpdated?: ((networkKeyHex: string) => void) | null
+  storageManager?: any
+  onStorageChanged?: (() => void) | null
 }

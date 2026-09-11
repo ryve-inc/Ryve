@@ -58,6 +58,16 @@ export type NetworkInfo = {
   networks: NetworkItem[]
 }
 
+export type StorageQuotaMode = 'limited' | 'all'
+
+export type StorageInfo = {
+  quotaMode: StorageQuotaMode
+  quotaBytes: number
+  usedBytes: number
+  availableBytes: number
+  freeDiskBytes: number
+}
+
 export type AppStatus = {
   unlocked: boolean
   identity: string | null
@@ -66,6 +76,7 @@ export type AppStatus = {
   peers: number
   blindPeerKeys: string[]
   network: NetworkInfo
+  storage: StorageInfo
 }
 
 export type BridgeApi = {

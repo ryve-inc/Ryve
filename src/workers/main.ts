@@ -20,6 +20,7 @@ import {
 import { VaultDrive } from './vault-drive'
 import { PublicCatalogManager } from './vault-drive/public-catalog'
 import { GlobalChunkStore } from './global-chunk-store'
+import { StorageManager } from './storage-manager'
 import {
   loadSettings,
   saveSettings,
@@ -69,10 +70,14 @@ pear.updater.on('updated', () => pipe.write('updated'))
 const publicCatalog = new PublicCatalogManager(storageDir)
 publicCatalog.init().catch((err) => console.error('[PublicCatalog] Init error:', err))
 
+const storageManager = new StorageManager({ storageDir })
+storageManager.init().catch((err) => console.error('[StorageManager] Init error:', err))
+
 const chunkStore = new GlobalChunkStore({
   swarm,
   storageDir,
   publicCatalog,
+  storageManager,
   getNetworkKeyHex: () => state.networkKeyHex,
   getJoinedNetworkKeys: () => state.networks.map((n) => n.networkKeyHex),
   isNetworkJoined: (netKey) => state.networks.some((n) => n.networkKeyHex === netKey),
@@ -80,7 +85,11 @@ const chunkStore = new GlobalChunkStore({
     if (netKey === state.networkKeyHex) {
       console.log(`[Main:Event] Public catalog updated for active network ${netKey.slice(0, 12)}. Emitting event to UI.`)
       emit({ type: 'event', name: 'public-catalog-updated', data: { networkKeyHex: netKey } })
+      emit({ type: 'event', name: 'status', data: statusPayload() })
     }
+  },
+  onStorageChanged: () => {
+    emit({ type: 'event', name: 'status', data: statusPayload() })
   }
 })
 chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
@@ -106,8 +115,14 @@ interface State {
   vaultStore: any
   vault: VaultDrive | null
   chunkStore: GlobalChunkStore
+  storageManager: StorageManager
   blinds: any
-  settings: { blindPeerKeys: string[]; displayName?: string }
+  settings: {
+    blindPeerKeys: string[]
+    displayName?: string
+    storageQuotaMode?: 'limited' | 'all'
+    storageQuotaBytes?: number
+  }
   peerCount: number
   networks: NetworkStorageItem[]
   activeNetworkId: string | null
@@ -127,6 +142,7 @@ const state: State = {
   vaultStore: null,
   vault: null,
   chunkStore,
+  storageManager,
   blinds: null,
   settings: { blindPeerKeys: [] },
   peerCount: 0,
@@ -245,7 +261,8 @@ function statusPayload() {
       joined: state.networks.length > 0 || !!state.networkKeyHex,
       activeId: state.activeNetworkId || currentNetwork?.id || null,
       networks: networkItems
-    }
+    },
+    storage: state.storageManager.getStorageInfoSync()
   }
 }
 
@@ -253,6 +270,12 @@ async function ensureSettings() {
   state.settings = await loadSettings(storageDir)
   if (state.settings.displayName) {
     state.displayName = state.settings.displayName
+  }
+  if (state.settings.storageQuotaMode) {
+    await state.storageManager.setQuota(
+      state.settings.storageQuotaMode,
+      state.settings.storageQuotaBytes
+    )
   }
 }
 
@@ -649,7 +672,9 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
 
   async upload({ localPath, destPath, mime, isPrivate }: { localPath: string; destPath: string; mime?: string; isPrivate?: boolean }) {
     if (!state.vault) throw new Error('Not unlocked')
-    return state.vault.upload(localPath, destPath, mime, isPrivate !== false)
+    const res = await state.vault.upload(localPath, destPath, mime, isPrivate !== false)
+    emit({ type: 'event', name: 'status', data: statusPayload() })
+    return res
   },
 
   async download({ path: entryPath, destLocalPath }: { path: string; destLocalPath: string }) {
@@ -659,7 +684,9 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
 
   async delete({ path: entryPath }: { path: string }) {
     if (!state.vault) throw new Error('Not unlocked')
-    return state.vault.delete(entryPath)
+    const res = await state.vault.delete(entryPath)
+    emit({ type: 'event', name: 'status', data: statusPayload() })
+    return res
   },
 
   async getChunkManifest({ path: entryPath }: { path: string }) {
@@ -681,6 +708,18 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
       }
     }
     return statusPayload()
+  },
+
+  async setStorageQuota({ mode, quotaBytes }: { mode: 'limited' | 'all'; quotaBytes?: number }) {
+    await state.storageManager.setQuota(mode, quotaBytes)
+    state.settings.storageQuotaMode = mode
+    if (quotaBytes) state.settings.storageQuotaBytes = quotaBytes
+    await saveSettings(storageDir, state.settings)
+    return statusPayload()
+  },
+
+  async getStorageInfo() {
+    return state.storageManager.getStorageInfo()
   }
 }
 
@@ -694,7 +733,8 @@ const mutateMethods = new Set([
   'download',
   'delete',
   'mkdir',
-  'setBlindPeers'
+  'setBlindPeers',
+  'setStorageQuota'
 ])
 
 pipe.on('data', async (data: any) => {

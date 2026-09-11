@@ -4,6 +4,7 @@ import { AppSidebar } from '@/components/app-sidebar'
 import { DetailPanel } from '@/components/detail-panel'
 import { FilesPage } from '@/pages/files-page'
 import { HomeDashboard } from '@/pages/home-dashboard'
+import { SettingsPage } from '@/pages/settings-page'
 import { cn } from '@/lib/utils'
 import { useDrive } from '@/context/drive-context'
 import { Share2 } from 'lucide-react'
@@ -24,7 +25,9 @@ export function AppShell() {
   const breadcrumb =
     currentNav === 'home'
       ? 'RYVE / Dashboard'
-      : `${activeNetwork?.name || 'P2P Network'} ${currentDir}`
+      : currentNav === 'settings'
+        ? 'RYVE / Settings & Storage Allocation'
+        : `${activeNetwork?.name || 'P2P Network'} ${currentDir}`
 
   return (
     <section className="grid h-full grid-cols-[280px_1fr_auto]">
@@ -63,7 +66,13 @@ export function AppShell() {
             }
           }}
         >
-          {currentNav === 'home' ? <HomeDashboard /> : <FilesPage />}
+          {currentNav === 'home' ? (
+            <HomeDashboard />
+          ) : currentNav === 'settings' ? (
+            <SettingsPage />
+          ) : (
+            <FilesPage />
+          )}
         </div>
       </main>
 

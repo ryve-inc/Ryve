@@ -23,6 +23,8 @@ class GlobalChunkStore {
   getJoinedNetworkKeys: (() => string[]) | null
   isNetworkJoined: ((networkKeyHex: string) => boolean) | null
   onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
+  storageManager: any
+  onStorageChanged: (() => void) | null
 
   constructor({
     swarm,
@@ -31,7 +33,9 @@ class GlobalChunkStore {
     getNetworkKeyHex = null,
     getJoinedNetworkKeys = null,
     isNetworkJoined = null,
-    onPublicCatalogUpdated = null
+    onPublicCatalogUpdated = null,
+    storageManager = null,
+    onStorageChanged = null
   }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
@@ -42,6 +46,8 @@ class GlobalChunkStore {
     this.getJoinedNetworkKeys = getJoinedNetworkKeys
     this.isNetworkJoined = isNetworkJoined
     this.onPublicCatalogUpdated = onPublicCatalogUpdated
+    this.storageManager = storageManager
+    this.onStorageChanged = onStorageChanged
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -127,7 +133,9 @@ class GlobalChunkStore {
       this.getNetworkKeyHex || undefined,
       this.onPublicCatalogUpdated || undefined,
       this.getJoinedNetworkKeys || undefined,
-      this.isNetworkJoined || undefined
+      this.isNetworkJoined || undefined,
+      this.storageManager || undefined,
+      this.onStorageChanged || undefined
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -220,6 +228,9 @@ class GlobalChunkStore {
       if ((node as any)?.isSelf) {
         for (const chunk of peerChunks) {
           selfAssignedHashes.add(chunk.hash)
+          if (this.storageManager) {
+            this.storageManager.recordChunkAdded(chunk.buffer.byteLength)
+          }
         }
         continue
       }
@@ -240,7 +251,18 @@ class GlobalChunkStore {
           )
           offloadedHashes.add(chunk.hash)
         } catch (err: any) {
-          console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
+          const isQuota = err?.message?.includes('QUOTA_EXCEEDED')
+          console.warn(
+            `[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer (${isQuota ? 'QUOTA FULL' : err?.message || err}). Retaining locally.`
+          )
+          if (isQuota) {
+            ;(node as any)._availableStorageBytes = 0
+          }
+          // Retain chunk locally to prevent data loss
+          selfAssignedHashes.add(chunk.hash)
+          if (this.storageManager) {
+            this.storageManager.recordChunkAdded(chunk.buffer.byteLength)
+          }
         }
       }
     }
@@ -256,6 +278,14 @@ class GlobalChunkStore {
       } else {
         await fs.promises.chmod(localPath, 0o444).catch(() => {})
       }
+    }
+
+    if (this.storageManager) {
+      await this.storageManager.recalculateUsedBytes().catch(() => {})
+    }
+
+    if (typeof this.onStorageChanged === 'function') {
+      try { this.onStorageChanged() } catch {}
     }
 
     console.log(
@@ -304,16 +334,30 @@ class GlobalChunkStore {
       if (!hash) continue
       const localPath = path.join(this.cacheDir, hash + '.bin')
       try {
+        const st = await fs.promises.stat(localPath).catch(() => null)
         await fs.promises.chmod(localPath, 0o666).catch(() => {})
         await fs.promises.unlink(localPath)
+        if (this.storageManager && st && typeof st.size === 'number') {
+          this.storageManager.recordChunkRemoved(st.size)
+        }
         console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)}`)
       } catch (err) {
         try {
+          const st = await fs.promises.stat(localPath).catch(() => null)
           await fs.promises.chmod(localPath, 0o777).catch(() => {})
           await fs.promises.unlink(localPath)
+          if (this.storageManager && st && typeof st.size === 'number') {
+            this.storageManager.recordChunkRemoved(st.size)
+          }
           console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)} (fallback)`)
         } catch {}
       }
+    }
+    if (this.storageManager) {
+      await this.storageManager.recalculateUsedBytes().catch(() => {})
+    }
+    if (typeof this.onStorageChanged === 'function') {
+      try { this.onStorageChanged() } catch {}
     }
   }
 
@@ -328,7 +372,8 @@ class GlobalChunkStore {
     await this.purgeChunks(hashes)
 
     // 2. Broadcast RPC delete request to connected network peers
-    const peers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    const candidatePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
     let notifiedPeers = 0
     for (const conn of peers) {
       const rpc = (conn as any)._chunkRpc
@@ -377,6 +422,13 @@ class GlobalChunkStore {
           await fs.promises.unlink(file.path)
           freedBytes += file.size
         } catch {}
+      }
+
+      if (this.storageManager && freedBytes > 0) {
+        await this.storageManager.recalculateUsedBytes().catch(() => {})
+      }
+      if (freedBytes > 0 && typeof this.onStorageChanged === 'function') {
+        try { this.onStorageChanged() } catch {}
       }
 
       console.log(`[ChunkStore:Quota] Storage quota exceeded (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(maxBytes / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of oldest chunks.`)

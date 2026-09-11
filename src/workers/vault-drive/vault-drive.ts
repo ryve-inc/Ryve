@@ -162,9 +162,13 @@ class VaultDrive {
     const p = normalizePath(entryPath)
     await this.drive.ready()
     const rawHashes: string[] = []
+    let detectedNetKey: string | null = null
 
     try {
       const entry = await this.drive.entry(p)
+      if (entry?.value?.metadata?.networkKeyHex) {
+        detectedNetKey = entry.value.metadata.networkKeyHex
+      }
       if (entry?.value?.metadata?.chunks && Array.isArray(entry.value.metadata.chunks)) {
         for (const c of entry.value.metadata.chunks) {
           if (c && c.hash) rawHashes.push(c.hash)
@@ -172,9 +176,11 @@ class VaultDrive {
       }
     } catch {}
 
+    const effectiveNetKey = detectedNetKey || this.networkKeyHex
+
     try {
-      if (this.publicCatalog && this.networkKeyHex) {
-        const pubManifest = await this.publicCatalog.getPublicManifest(this.networkKeyHex, p)
+      if (this.publicCatalog && effectiveNetKey) {
+        const pubManifest = await this.publicCatalog.getPublicManifest(effectiveNetKey, p)
         if (pubManifest?.chunks && Array.isArray(pubManifest.chunks)) {
           for (const c of pubManifest.chunks) {
             if (c && c.hash) rawHashes.push(c.hash)
@@ -186,18 +192,17 @@ class VaultDrive {
     const chunkHashes = Array.from(new Set(rawHashes))
 
     await this.drive.del(p)
-    if (this.publicCatalog && this.networkKeyHex) {
-      await this.publicCatalog.removePublicFile(this.networkKeyHex, p).catch(() => {})
+    if (this.publicCatalog && effectiveNetKey) {
+      await this.publicCatalog.removePublicFile(effectiveNetKey, p).catch(() => {})
       if (this.chunkStore && typeof this.chunkStore.broadcastRemovePublicFile === 'function') {
-        await this.chunkStore.broadcastRemovePublicFile(p, this.networkKeyHex).catch(() => {})
+        await this.chunkStore.broadcastRemovePublicFile(p, effectiveNetKey).catch(() => {})
       }
     }
-
 
     if (chunkHashes.length > 0 && this.chunkStore) {
       console.log(`[VaultDrive:Delete] Purging locally & broadcasting deletion for ${chunkHashes.length} chunk(s) associated with ${p}`)
       await this.chunkStore.purgeChunks(chunkHashes).catch(() => {})
-      await this.chunkStore.broadcastDeleteChunks(chunkHashes, this.networkKeyHex).catch((err: any) => {
+      await this.chunkStore.broadcastDeleteChunks(chunkHashes, effectiveNetKey).catch((err: any) => {
         console.warn(`[VaultDrive:Delete] Broadcast delete warning:`, err?.message || err)
       })
     }

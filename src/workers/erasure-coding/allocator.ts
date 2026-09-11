@@ -65,7 +65,24 @@ export function allocateChunksToPeers(
     }
   }
 
-  // Interleaved sliding round-robin distribution
+  // Storage capacity-aware peer selection: filter out peers with zero/insufficient quota
+  const avgChunkSize = chunks.length > 0 ? chunks[0].buffer.byteLength : 0
+  const eligiblePeers = peers.filter((p) => {
+    if ((p as any)?.isSelf) return true
+    const avail = (p as any)?._availableStorageBytes
+    if (avail === undefined) return true // Legacy peer or unannounced: assume eligible
+    return avail > avgChunkSize
+  })
+
+  if (eligiblePeers.length < peers.length) {
+    const fullCount = peers.length - eligiblePeers.length
+    warnings.push(`${fullCount} peer(s) omitted due to exhausted storage quota.`)
+  }
+
+  const activePeers = eligiblePeers.length > 0 ? eligiblePeers : peers
+  const activeCount = activePeers.length
+
+  // Interleaved sliding round-robin distribution across capacity-eligible peers
   const dataChunks = chunks.filter((c) => !c.isParity)
   const parityChunks = chunks.filter((c) => c.isParity)
 
@@ -77,12 +94,12 @@ export function allocateChunksToPeers(
   }
 
   interleaved.forEach((chunk, i) => {
-    const peerIndex = i % P
-    distribution.get(peers[peerIndex])!.push(chunk)
+    const peerIndex = i % activeCount
+    distribution.get(activePeers[peerIndex])!.push(chunk)
   })
 
   const maxChunksPerPeer = Math.max(...Array.from(distribution.values()).map((list) => list.length))
-  const faultTolerance: FaultToleranceStatus = P >= 2 ? 'full' : 'degraded'
+  const faultTolerance: FaultToleranceStatus = activeCount >= 2 ? 'full' : 'degraded'
 
   warnings.push(`APRE Active: Distributed across ${P} peers. Need ${K} chunks to recover.`)
 

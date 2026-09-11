@@ -129,6 +129,7 @@ type DriveContextValue = {
   closePreviewModal: () => void
   deleteSelected: () => Promise<void>
   copyClipboard: (text: string) => void
+  setStorageQuota: (mode: 'limited' | 'all', quotaBytes?: number) => Promise<void>
 }
 
 const emptyStatus: AppStatus = {
@@ -145,6 +146,13 @@ const emptyStatus: AppStatus = {
     joined: false,
     activeId: null,
     networks: []
+  },
+  storage: {
+    quotaMode: 'limited',
+    quotaBytes: 10 * 1024 * 1024 * 1024,
+    usedBytes: 0,
+    availableBytes: 10 * 1024 * 1024 * 1024,
+    freeDiskBytes: 50 * 1024 * 1024 * 1024
   }
 }
 
@@ -384,6 +392,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     }
     showToast('Upload complete')
     await refreshFiles()
+    rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
   }, [refreshFiles, showToast])
 
   const uploadFiles = useCallback(
@@ -405,6 +414,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       }
       showToast('Upload complete')
       await refreshFiles()
+      rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
     },
     [refreshFiles, showToast]
   )
@@ -519,6 +529,19 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       const next = await rpc<AppStatus>('setBlindPeers', { keys })
       setStatus(next)
       showToast('Blind peers saved')
+    },
+    [showToast]
+  )
+
+  const setStorageQuota = useCallback(
+    async (mode: 'limited' | 'all', quotaBytes?: number) => {
+      try {
+        const next = await rpc<AppStatus>('setStorageQuota', { mode, quotaBytes })
+        setStatus((prev) => ({ ...prev, ...next }))
+        showToast(mode === 'all' ? 'Storage set to allocate all available space' : 'Storage quota updated')
+      } catch (err: any) {
+        showToast(`Failed to update storage: ${err?.message || err}`)
+      }
     },
     [showToast]
   )
@@ -689,6 +712,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     await rpc('delete', { path: selectedEntry.path })
     closeDetail()
     await refreshFiles()
+    rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
   }, [askConfirm, closeDetail, refreshFiles, selectedEntry, showToast])
 
   useEffect(() => {
@@ -764,6 +788,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
         }
         if (msg.name === 'public-catalog-updated') {
           refreshFiles()
+          rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
         }
         if (msg.name === 'ready') {
           console.log('worker ready', msg.data)
@@ -898,7 +923,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       previewModal,
       closePreviewModal,
       deleteSelected,
-      copyClipboard
+      copyClipboard,
+      setStorageQuota
     }),
     [
       status,
@@ -962,7 +988,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       previewModal,
       closePreviewModal,
       deleteSelected,
-      copyClipboard
+      copyClipboard,
+      setStorageQuota
     ]
   )
 

@@ -146,9 +146,9 @@ ipcMain.handle('dialog:savePath', async (evt, defaultName?: string) => {
     defaultPath: defaultName || 'download',
     filters: ext
       ? [
-          { name: `${ext.toUpperCase()} File (*.${ext})`, extensions: [ext] },
-          { name: 'All Files (*.*)', extensions: ['*'] }
-        ]
+        { name: `${ext.toUpperCase()} File (*.${ext})`, extensions: [ext] },
+        { name: 'All Files (*.*)', extensions: ['*'] }
+      ]
       : undefined
   }
   const result = win

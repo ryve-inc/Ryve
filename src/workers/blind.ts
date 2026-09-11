@@ -46,15 +46,45 @@ async function saveNetworks(storageDir: string, networks: NetworkStorageItem[]):
   await writeJson(file, networks)
 }
 
-async function loadSettings(storageDir: string): Promise<{ file: string; blindPeerKeys: string[] }> {
+async function loadSettings(storageDir: string): Promise<{
+  file: string
+  blindPeerKeys: string[]
+  displayName?: string
+  storageQuotaMode?: 'limited' | 'all'
+  storageQuotaBytes?: number
+}> {
   const file = path.join(storageDir, SETTINGS_FILE)
-  const data = await readJson<{ blindPeerKeys?: string[] }>(file, { blindPeerKeys: [] })
-  return { file, blindPeerKeys: Array.isArray(data.blindPeerKeys) ? data.blindPeerKeys : [] }
+  const data = await readJson<{
+    blindPeerKeys?: string[]
+    displayName?: string
+    storageQuotaMode?: 'limited' | 'all'
+    storageQuotaBytes?: number
+  }>(file, { blindPeerKeys: [] })
+  return {
+    file,
+    blindPeerKeys: Array.isArray(data.blindPeerKeys) ? data.blindPeerKeys : [],
+    displayName: data.displayName,
+    storageQuotaMode: data.storageQuotaMode,
+    storageQuotaBytes: data.storageQuotaBytes
+  }
 }
 
-async function saveSettings(storageDir: string, settings: { blindPeerKeys?: string[] }): Promise<void> {
+async function saveSettings(
+  storageDir: string,
+  settings: {
+    blindPeerKeys?: string[]
+    displayName?: string
+    storageQuotaMode?: 'limited' | 'all'
+    storageQuotaBytes?: number
+  }
+): Promise<void> {
   const file = path.join(storageDir, SETTINGS_FILE)
-  await writeJson(file, { blindPeerKeys: settings.blindPeerKeys || [] })
+  await writeJson(file, {
+    blindPeerKeys: settings.blindPeerKeys || [],
+    displayName: settings.displayName,
+    storageQuotaMode: settings.storageQuotaMode,
+    storageQuotaBytes: settings.storageQuotaBytes
+  })
 }
 
 async function loadSession(storageDir: string): Promise<any> {

@@ -33,7 +33,7 @@ export function PreviewModal() {
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 overflow-auto p-6 flex items-center justify-center bg-soil/20">
+        <div className="flex-1 overflow-auto custom-scrollbar p-6 flex items-center justify-center bg-soil/20">
           {error ? (
             <div className="max-w-md rounded-2xl border border-red-500/30 bg-red-950/40 p-6 text-center">
               <p className="m-0 text-lg font-bold text-red-400">Preview Failed</p>
@@ -48,7 +48,7 @@ export function PreviewModal() {
           ) : isAudio && url ? (
             <audio controls src={url} className="w-full max-w-md" />
           ) : isText && content ? (
-            <pre className="h-full w-full overflow-auto rounded-2xl border border-line bg-soil/80 p-6 font-mono text-xs text-sand whitespace-pre-wrap">
+            <pre className="h-full w-full overflow-auto custom-scrollbar rounded-2xl border border-line bg-soil/80 p-6 font-mono text-xs text-sand whitespace-pre-wrap">
               {content}
             </pre>
           ) : (

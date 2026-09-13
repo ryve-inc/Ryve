@@ -71,7 +71,7 @@ function AppViews() {
   return (
     <>
       <Atmosphere />
-      <div className="app-surface">{view === 'auth' ? <AuthView /> : <AppShell />}</div>
+      <div className="app-surface h-full min-h-0 overflow-hidden flex flex-col">{view === 'auth' ? <AuthView /> : <AppShell />}</div>
       <Toast />
       <CreateNetworkModal />
       <JoinNetworkModal />

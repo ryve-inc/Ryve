@@ -34,7 +34,7 @@ export function AppSidebar() {
         <div className="h-px w-8 bg-line/60" />
 
         {/* Joined Networks Icons */}
-        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto w-full items-center px-2">
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto custom-scrollbar w-full items-center px-2">
           {networks.map((net) => {
             const isActive = net.id === activeId && currentNav === 'files'
             const initials = net.name.split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase() || 'NET'
@@ -107,7 +107,7 @@ export function AppSidebar() {
             </span>
           </div>
 
-          <nav className="flex-1 overflow-y-auto space-y-1">
+          <nav className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
             <div className="text-[10px] font-mono uppercase tracking-wider text-mute px-2 py-1">
               Networks ({networks.length})
             </div>

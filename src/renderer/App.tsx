@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { CreateNetworkModal } from '@/components/create-network-modal'
 import { JoinNetworkModal } from '@/components/join-network-modal'
 import { NetworkInfoModal } from '@/components/network-info-modal'
+import { NetworkSettingsModal } from '@/components/network/network-settings-modal'
 import { PreviewModal } from '@/components/preview-modal'
 import { PromptDialog } from '@/components/prompt-dialog'
 import { Toast } from '@/components/toast'
@@ -76,6 +77,7 @@ function AppViews() {
       <CreateNetworkModal />
       <JoinNetworkModal />
       <NetworkInfoModal />
+      <NetworkSettingsModal />
       <PromptDialog />
       <PreviewModal />
     </>

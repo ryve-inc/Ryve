@@ -15,7 +15,8 @@ export function setupConnectionRpc(
   getJoinedNetworkKeys?: () => string[],
   isNetworkJoined?: (networkKeyHex: string) => boolean,
   storageManager?: any,
-  onStorageChanged?: () => void
+  onStorageChanged?: () => void,
+  onPeerHandshake?: (conn: any, networkKeys: string[]) => void
 ) {
   if (conn._chunkRpc) return
 
@@ -30,37 +31,97 @@ export function setupConnectionRpc(
   if (!conn._networkKeyHexes) {
     conn._networkKeyHexes = new Set<string>()
   }
+  if (!conn._availableStorageByNetwork) {
+    conn._availableStorageByNetwork = new Map<string, number>()
+  }
   if (conn._availableStorageBytes === undefined) {
-    conn._availableStorageBytes = 10 * 1024 * 1024 * 1024 // Default 10 GB
+    conn._availableStorageBytes = 1 * 1024 * 1024 * 1024 // Default 1 GB
   }
 
-  // 1. Handshake to exchange joined network keys and available storage capacity between peers
+  // 1. Handshake to exchange joined network keys and available storage capacity per-network between peers
   rpc.respond('handshake', async (req: any) => {
     const peerKeys: string[] = Array.isArray(req?.networkKeyHexes) ? req.networkKeyHexes : []
+    let added = false
     for (const k of peerKeys) {
-      if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
+      if (typeof k === 'string' && k.length > 0) {
+        if (!conn._networkKeyHexes.has(k)) {
+          conn._networkKeyHexes.add(k)
+          added = true
+        }
+      }
+    }
+    if (added && onPeerHandshake) {
+      onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+    }
+    if (req?.availableByNetwork && typeof req.availableByNetwork === 'object') {
+      for (const [k, v] of Object.entries(req.availableByNetwork)) {
+        if (typeof v === 'number') conn._availableStorageByNetwork.set(k, v)
+      }
     }
     if (typeof req?.availableStorageBytes === 'number') {
       conn._availableStorageBytes = req.availableStorageBytes
     }
+
     const myKeys = getJoinedNetworkKeys ? getJoinedNetworkKeys() : []
-    const myAvailable = storageManager ? await storageManager.getAvailableBytes() : 10 * 1024 * 1024 * 1024
-    return { ok: true, networkKeyHexes: myKeys, availableStorageBytes: myAvailable }
+    const myAvailableByNet: Record<string, number> = {}
+    if (storageManager && myKeys.length > 0) {
+      for (const k of myKeys) {
+        myAvailableByNet[k] = await storageManager.getAvailableBytesForNetwork(k)
+      }
+    }
+
+    const defaultAvailable = storageManager
+      ? await storageManager.getAvailableBytesForNetwork(null)
+      : 1 * 1024 * 1024 * 1024
+
+    return {
+      ok: true,
+      networkKeyHexes: myKeys,
+      availableStorageBytes: defaultAvailable,
+      availableByNetwork: myAvailableByNet
+    }
   })
 
   // Send immediate handshake to the remote peer
   const initiateHandshake = async () => {
     try {
       const myKeys = getJoinedNetworkKeys ? getJoinedNetworkKeys() : []
-      const myAvailable = storageManager ? await storageManager.getAvailableBytes() : 10 * 1024 * 1024 * 1024
+      const myAvailableByNet: Record<string, number> = {}
+      if (storageManager && myKeys.length > 0) {
+        for (const k of myKeys) {
+          myAvailableByNet[k] = await storageManager.getAvailableBytesForNetwork(k)
+        }
+      }
+      const defaultAvailable = storageManager
+        ? await storageManager.getAvailableBytesForNetwork(null)
+        : 1 * 1024 * 1024 * 1024
+
       const res = await rpc.request(
         'handshake',
-        { networkKeyHexes: myKeys, availableStorageBytes: myAvailable },
+        {
+          networkKeyHexes: myKeys,
+          availableStorageBytes: defaultAvailable,
+          availableByNetwork: myAvailableByNet
+        },
         { timeout: 5000 }
       )
       if (res && Array.isArray(res.networkKeyHexes)) {
+        let added = false
         for (const k of res.networkKeyHexes) {
-          if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
+          if (typeof k === 'string' && k.length > 0) {
+            if (!conn._networkKeyHexes.has(k)) {
+              conn._networkKeyHexes.add(k)
+              added = true
+            }
+          }
+        }
+        if (added && onPeerHandshake) {
+          onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+        }
+      }
+      if (res && res.availableByNetwork && typeof res.availableByNetwork === 'object') {
+        for (const [k, v] of Object.entries(res.availableByNetwork)) {
+          if (typeof v === 'number') conn._availableStorageByNetwork.set(k, v)
         }
       }
       if (res && typeof res.availableStorageBytes === 'number') {
@@ -69,6 +130,11 @@ export function setupConnectionRpc(
     } catch {}
   }
   initiateHandshake().catch(() => {})
+  setTimeout(() => {
+    if (!conn.destroyed && conn._networkKeyHexes.size === 0) {
+      initiateHandshake().catch(() => {})
+    }
+  }, 1000)
 
   // 2. Fetch chunk with integrity check & network verification
   rpc.respond('get-chunk', async (req: any) => {
@@ -94,7 +160,7 @@ export function setupConnectionRpc(
     }
   })
 
-  // 3. Store chunk with strict network membership, storage quota & integrity validation + read-only locking
+  // 3. Store chunk with strict per-network quota & integrity validation + read-only locking
   rpc.respond('store-chunk', async (req: any) => {
     if (!req || !req.hash || !req.data) throw new Error('Invalid store chunk payload')
     if (req.networkKeyHex && isNetworkJoined && !isNetworkJoined(req.networkKeyHex)) {
@@ -107,10 +173,11 @@ export function setupConnectionRpc(
     }
 
     if (storageManager) {
-      const canAccept = await storageManager.canAccept(buf.byteLength)
+      // STRICT PER-NETWORK VALIDATION
+      const canAccept = await storageManager.canAccept(buf.byteLength, req.networkKeyHex)
       if (!canAccept) {
         console.warn(
-          `[ChunkStore:Quota] Rejected chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes): Storage quota full`
+          `[ChunkStore:Quota] Rejected chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes) for network ${req.networkKeyHex ? req.networkKeyHex.slice(0, 12) : 'default'}: Storage quota full`
         )
         throw new Error('QUOTA_EXCEEDED')
       }
@@ -121,7 +188,7 @@ export function setupConnectionRpc(
     await fs.promises.chmod(chunkPath, 0o444).catch(() => {})
 
     if (storageManager) {
-      storageManager.recordChunkAdded(buf.byteLength)
+      storageManager.recordChunkAdded(req.hash, buf.byteLength, req.networkKeyHex)
     }
 
     if (typeof onStorageChanged === 'function') {
@@ -152,7 +219,7 @@ export function setupConnectionRpc(
         count++
         if (st && typeof st.size === 'number') {
           freedBytes += st.size
-          if (storageManager) storageManager.recordChunkRemoved(st.size)
+          if (storageManager) storageManager.recordChunkRemoved(hash, st.size, req.networkKeyHex)
         }
       } catch (err) {
         try {
@@ -162,7 +229,7 @@ export function setupConnectionRpc(
           count++
           if (st && typeof st.size === 'number') {
             freedBytes += st.size
-            if (storageManager) storageManager.recordChunkRemoved(st.size)
+            if (storageManager) storageManager.recordChunkRemoved(hash, st.size, req.networkKeyHex)
           }
         } catch {}
       }
@@ -234,7 +301,7 @@ export function setupConnectionRpc(
           purgedChunks++
           if (st && typeof st.size === 'number') {
             freedBytes += st.size
-            if (storageManager) storageManager.recordChunkRemoved(st.size)
+            if (storageManager) storageManager.recordChunkRemoved(c.hash, st.size, netKey)
           }
         } catch {}
       }
@@ -259,5 +326,3 @@ export function setupConnectionRpc(
     console.log(`[ChunkStore:Network] Swarm socket disconnected. Remaining peers: ${swarm.connections.size}`)
   })
 }
-
-

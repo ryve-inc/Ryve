@@ -25,6 +25,7 @@ class GlobalChunkStore {
   onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
   storageManager: any
   onStorageChanged: (() => void) | null
+  onPeerHandshake: ((conn: any, networkKeys: string[]) => void) | null
 
   constructor({
     swarm,
@@ -35,7 +36,8 @@ class GlobalChunkStore {
     isNetworkJoined = null,
     onPublicCatalogUpdated = null,
     storageManager = null,
-    onStorageChanged = null
+    onStorageChanged = null,
+    onPeerHandshake = null
   }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
@@ -48,6 +50,7 @@ class GlobalChunkStore {
     this.onPublicCatalogUpdated = onPublicCatalogUpdated
     this.storageManager = storageManager
     this.onStorageChanged = onStorageChanged
+    this.onPeerHandshake = onPeerHandshake
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -135,7 +138,8 @@ class GlobalChunkStore {
       this.getJoinedNetworkKeys || undefined,
       this.isNetworkJoined || undefined,
       this.storageManager || undefined,
-      this.onStorageChanged || undefined
+      this.onStorageChanged || undefined,
+      this.onPeerHandshake || undefined
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -229,7 +233,7 @@ class GlobalChunkStore {
         for (const chunk of peerChunks) {
           selfAssignedHashes.add(chunk.hash)
           if (this.storageManager) {
-            this.storageManager.recordChunkAdded(chunk.buffer.byteLength)
+            this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
           }
         }
         continue
@@ -256,12 +260,16 @@ class GlobalChunkStore {
             `[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer (${isQuota ? 'QUOTA FULL' : err?.message || err}). Retaining locally.`
           )
           if (isQuota) {
-            ;(node as any)._availableStorageBytes = 0
+            if ((node as any)._availableStorageByNetwork && networkKeyHex) {
+              ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
+            } else {
+              ;(node as any)._availableStorageBytes = 0
+            }
           }
           // Retain chunk locally to prevent data loss
           selfAssignedHashes.add(chunk.hash)
           if (this.storageManager) {
-            this.storageManager.recordChunkAdded(chunk.buffer.byteLength)
+            this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
           }
         }
       }

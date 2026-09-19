@@ -60,6 +60,11 @@ export function JoinNetworkModal() {
             />
           </div>
 
+          <div className="rounded-xl border border-line/60 bg-moss/30 p-3 text-xs text-mute flex items-center justify-between">
+            <span>Default Storage Allocation:</span>
+            <span className="font-mono font-bold text-leaf">1.0 GB</span>
+          </div>
+
           <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"

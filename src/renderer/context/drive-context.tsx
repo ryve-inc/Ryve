@@ -72,6 +72,7 @@ type DriveContextValue = {
   createNetworkModal: { open: boolean; inviteLink: string }
   joinNetworkModal: { open: boolean }
   networkInfoModal: { open: boolean }
+  networkSettingsModal: { open: boolean; networkId: string | null }
   setDragging: (value: boolean) => void
   showToast: (msg: string) => void
   setAuthPanel: (panel: AuthPanel) => void
@@ -110,6 +111,8 @@ type DriveContextValue = {
   closeJoinNetworkModal: () => void
   openNetworkInfoModal: () => void
   closeNetworkInfoModal: () => void
+  openNetworkSettingsModal: (networkId: string) => void
+  closeNetworkSettingsModal: () => void
   createAccount: (name?: string) => Promise<void>
   confirmCreateAccount: (typed: string) => Promise<void>
   unlock: (mnemonic: string) => Promise<void>
@@ -130,6 +133,7 @@ type DriveContextValue = {
   deleteSelected: () => Promise<void>
   copyClipboard: (text: string) => void
   setStorageQuota: (mode: 'limited' | 'all', quotaBytes?: number) => Promise<void>
+  setNetworkStorageAllocation: (networkId: string, allocatedBytes: number) => Promise<void>
 }
 
 const emptyStatus: AppStatus = {
@@ -148,11 +152,12 @@ const emptyStatus: AppStatus = {
     networks: []
   },
   storage: {
-    quotaMode: 'limited',
-    quotaBytes: 10 * 1024 * 1024 * 1024,
-    usedBytes: 0,
-    availableBytes: 10 * 1024 * 1024 * 1024,
-    freeDiskBytes: 50 * 1024 * 1024 * 1024
+    totalAllocatedBytes: 0,
+    totalUsedBytes: 0,
+    totalFreeDiskBytes: 50 * 1024 * 1024 * 1024,
+    remainingDriveBytes: 50 * 1024 * 1024 * 1024,
+    reservedSystemBytes: 2 * 1024 * 1024 * 1024,
+    networks: {}
   }
 }
 
@@ -194,6 +199,10 @@ export function DriveProvider({ children }: { children: ReactNode }) {
   })
   const [joinNetworkModal, setJoinNetworkModal] = useState<{ open: boolean }>({ open: false })
   const [networkInfoModal, setNetworkInfoModal] = useState<{ open: boolean }>({ open: false })
+  const [networkSettingsModal, setNetworkSettingsModal] = useState<{ open: boolean; networkId: string | null }>({
+    open: false,
+    networkId: null
+  })
 
 
   const [selectedEntry, setSelectedEntry] = useState<SelectedEntry | null>(null)
@@ -578,6 +587,28 @@ export function DriveProvider({ children }: { children: ReactNode }) {
     setNetworkInfoModal({ open: false })
   }, [])
 
+  const openNetworkSettingsModal = useCallback((networkId: string) => {
+    setNetworkSettingsModal({ open: true, networkId })
+  }, [])
+
+  const closeNetworkSettingsModal = useCallback(() => {
+    setNetworkSettingsModal({ open: false, networkId: null })
+  }, [])
+
+  const setNetworkStorageAllocation = useCallback(
+    async (networkId: string, allocatedBytes: number) => {
+      try {
+        const next = await rpc<AppStatus>('setNetworkStorageAllocation', { id: networkId, allocatedBytes })
+        setStatus((prev) => ({ ...prev, ...next }))
+        showToast('Network storage allocation updated')
+      } catch (err: any) {
+        showToast(`Failed to update storage: ${err?.message || err}`)
+        throw err
+      }
+    },
+    [showToast]
+  )
+
   const createNetwork = useCallback(
     async (name?: string) => {
       try {
@@ -879,6 +910,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       createNetworkModal,
       joinNetworkModal,
       networkInfoModal,
+      networkSettingsModal,
       setDragging,
       showToast,
       setAuthPanel,
@@ -912,6 +944,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       closeJoinNetworkModal,
       openNetworkInfoModal,
       closeNetworkInfoModal,
+      openNetworkSettingsModal,
+      closeNetworkSettingsModal,
       createAccount,
       confirmCreateAccount,
       unlock,
@@ -924,7 +958,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       closePreviewModal,
       deleteSelected,
       copyClipboard,
-      setStorageQuota
+      setStorageQuota,
+      setNetworkStorageAllocation
     }),
     [
       status,
@@ -948,6 +983,7 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       createNetworkModal,
       joinNetworkModal,
       networkInfoModal,
+      networkSettingsModal,
       setDragging,
       showToast,
       setAuthPanel,
@@ -977,6 +1013,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       closeJoinNetworkModal,
       openNetworkInfoModal,
       closeNetworkInfoModal,
+      openNetworkSettingsModal,
+      closeNetworkSettingsModal,
       createAccount,
       confirmCreateAccount,
       unlock,
@@ -989,7 +1027,8 @@ export function DriveProvider({ children }: { children: ReactNode }) {
       closePreviewModal,
       deleteSelected,
       copyClipboard,
-      setStorageQuota
+      setStorageQuota,
+      setNetworkStorageAllocation
     ]
   )
 

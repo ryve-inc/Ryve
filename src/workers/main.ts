@@ -90,6 +90,19 @@ const chunkStore = new GlobalChunkStore({
   },
   onStorageChanged: () => {
     emit({ type: 'event', name: 'status', data: statusPayload() })
+  },
+  onPeerHandshake: (conn: any, remoteKeys: string[]) => {
+    console.log(`[ChunkStore:Handshake] Peer connected with network keys:`, remoteKeys)
+    if (!conn._networkIds) conn._networkIds = []
+    for (const net of state.networks) {
+      if (remoteKeys.includes(net.networkKeyHex)) {
+        if (!conn._networkIds.includes(net.id)) {
+          conn._networkIds.push(net.id)
+        }
+      }
+    }
+    recalculateNetworkPeerCounts()
+    emit({ type: 'event', name: 'status', data: statusPayload() })
   }
 })
 chunkStore.init().catch((err) => console.error('[ChunkStore] Init error:', err))
@@ -108,8 +121,17 @@ interface State {
   networkKeyHex: string | null
   networkLink: string | null
   topicHex: string | null
-  /** Map of networkId → { networkDiscovery, chunkDiscovery, swarmTopic } for ALL joined networks */
-  joinedTopics: Map<string, { networkDiscovery: any; chunkDiscovery: any; swarmTopic: Uint8Array; topicHex: string }>
+  /** Map of networkId → handles for ALL joined networks */
+  joinedTopics: Map<
+    string,
+    {
+      networkDiscovery: any
+      swarmTopic: Uint8Array
+      swarmChunkTopic: Uint8Array
+      topicHex: string
+      chunkTopicHex: string
+    }
+  >
   /** Per-network peer counts tracked via peerInfo.topics */
   networkPeerCounts: Map<string, number>
   vaultStore: any
@@ -160,36 +182,73 @@ function withLock<T>(fn: () => Promise<T>): Promise<T> {
 
 const activeNetworkPeers = new Set<any>()
 
+function recalculateNetworkPeerCounts() {
+  state.networkPeerCounts.clear()
+  for (const conn of activeNetworkPeers) {
+    const netIds: string[] = (conn as any)._networkIds || []
+    if (netIds.length > 0) {
+      for (const netId of netIds) {
+        state.networkPeerCounts.set(netId, (state.networkPeerCounts.get(netId) || 0) + 1)
+      }
+    } else if (state.networks.length === 1) {
+      const netId = state.networks[0].id
+      state.networkPeerCounts.set(netId, (state.networkPeerCounts.get(netId) || 0) + 1)
+    }
+  }
+}
+
 /**
  * Resolve which networkIds a connection belongs to by matching
  * peerInfo.topics against our stored swarmTopic buffers.
  */
 function resolveNetworkIds(peerInfo: any): string[] {
-  if (!peerInfo?.topics || !Array.isArray(peerInfo.topics) || peerInfo.topics.length === 0) {
-    return state.activeNetworkId ? [state.activeNetworkId] : []
-  }
-  const matched: string[] = []
-  const peerTopicHexes = peerInfo.topics.map((t: any) =>
-    typeof t === 'string' ? t : b4a.toString(t, 'hex')
-  )
+  const matched = new Set<string>()
 
-  for (const [netId, handles] of state.joinedTopics) {
-    if (handles.topicHex && peerTopicHexes.includes(handles.topicHex)) {
-      matched.push(netId)
-    } else {
-      for (const topic of peerInfo.topics) {
-        if (b4a.equals(topic, handles.swarmTopic)) {
-          matched.push(netId)
+  if (peerInfo) {
+    const rawTopics = peerInfo.topics || []
+    const topicsArr = Array.isArray(rawTopics) ? rawTopics : Array.from(rawTopics)
+    const peerTopicHexes = topicsArr.map((t: any) =>
+      typeof t === 'string' ? t.toLowerCase() : b4a.toString(t, 'hex').toLowerCase()
+    )
+
+    for (const [netId, handles] of state.joinedTopics) {
+      const hasMatchHex =
+        (handles.topicHex && peerTopicHexes.includes(handles.topicHex.toLowerCase())) ||
+        (handles.chunkTopicHex && peerTopicHexes.includes(handles.chunkTopicHex.toLowerCase()))
+
+      if (hasMatchHex) {
+        matched.add(netId)
+        continue
+      }
+
+      for (const topic of topicsArr) {
+        const topicBuf = typeof topic === 'string' ? b4a.from(topic, 'hex') : topic
+        if (
+          (handles.swarmTopic && b4a.equals(topicBuf, handles.swarmTopic)) ||
+          (handles.swarmChunkTopic && b4a.equals(topicBuf, handles.swarmChunkTopic))
+        ) {
+          matched.add(netId)
           break
         }
       }
     }
   }
-  return matched.length > 0 ? matched : (state.activeNetworkId ? [state.activeNetworkId] : [])
+
+  if (matched.size > 0) return Array.from(matched)
+
+  // Fallback: if single network or activeNetworkId
+  if (state.activeNetworkId && state.joinedTopics.has(state.activeNetworkId)) {
+    return [state.activeNetworkId]
+  }
+  if (state.networks.length === 1 && state.joinedTopics.has(state.networks[0].id)) {
+    return [state.networks[0].id]
+  }
+  return []
 }
 
 swarm.on('connection', (conn: any, peerInfo: any) => {
   activeNetworkPeers.add(conn)
+  ;(conn as any)._peerInfo = peerInfo
   state.peerCount = activeNetworkPeers.size
 
   // Track which networks this connection belongs to
@@ -203,7 +262,20 @@ swarm.on('connection', (conn: any, peerInfo: any) => {
     if (net) {
       (conn as any)._networkKeyHexes.add(net.networkKeyHex)
     }
-    state.networkPeerCounts.set(netId, (state.networkPeerCounts.get(netId) || 0) + 1)
+  }
+  recalculateNetworkPeerCounts()
+
+  if (peerInfo && typeof peerInfo.on === 'function') {
+    peerInfo.on('topic', () => {
+      const updatedNetIds = resolveNetworkIds(peerInfo)
+      ;(conn as any)._networkIds = updatedNetIds
+      for (const netId of updatedNetIds) {
+        const net = state.networks.find((n) => n.id === netId)
+        if (net) (conn as any)._networkKeyHexes.add(net.networkKeyHex)
+      }
+      recalculateNetworkPeerCounts()
+      emit({ type: 'event', name: 'status', data: statusPayload() })
+    })
   }
 
   console.log(`[Network:Swarm] Peer connected on networks [${netIds.join(', ')}]. Total peers: ${state.peerCount}`)
@@ -212,12 +284,7 @@ swarm.on('connection', (conn: any, peerInfo: any) => {
   conn.on('close', () => {
     activeNetworkPeers.delete(conn)
     state.peerCount = activeNetworkPeers.size
-    const connNetIds: string[] = (conn as any)._networkIds || []
-    for (const netId of connNetIds) {
-      const cur = state.networkPeerCounts.get(netId) || 0
-      if (cur > 1) state.networkPeerCounts.set(netId, cur - 1)
-      else state.networkPeerCounts.delete(netId)
-    }
+    recalculateNetworkPeerCounts()
     console.log(`[Network:Swarm] Peer disconnected. Remaining peers: ${state.peerCount}`)
     emit({ type: 'event', name: 'status', data: statusPayload() })
   })
@@ -235,17 +302,27 @@ function reply(id: number, ok: boolean, result: unknown, error?: unknown) {
 
 function statusPayload() {
   const currentNetwork = state.networks.find((n) => n.id === state.activeNetworkId) || state.networks[0] || null
-  const networkItems = state.networks.map((n) => ({
-    id: n.id,
-    name: n.name,
-    networkLink: n.networkLink,
-    networkKeyHex: n.networkKeyHex,
-    topicHex: n.topicHex,
-    peers: state.networkPeerCounts.get(n.id) || 0,
-    createdAt: n.createdAt
-  }))
+  const storageInfo = state.storageManager.getStorageInfoSync(state.networks)
+  const networkItems = state.networks.map((n) => {
+    const alloc = storageInfo.networks[n.id]
+    const count =
+      state.networkPeerCounts.get(n.id) ?? (state.networks.length === 1 ? state.peerCount : 0)
+    return {
+      id: n.id,
+      name: n.name,
+      networkLink: n.networkLink,
+      networkKeyHex: n.networkKeyHex,
+      topicHex: n.topicHex,
+      peers: count,
+      createdAt: n.createdAt,
+      allocatedBytes: alloc?.allocatedBytes || n.allocatedBytes || 1073741824,
+      usedBytes: alloc?.usedBytes || 0
+    }
+  })
 
-  const activePeers = currentNetwork ? (state.networkPeerCounts.get(currentNetwork.id) || 0) : 0
+  const activePeers = currentNetwork
+    ? (state.networkPeerCounts.get(currentNetwork.id) ?? (state.networks.length === 1 ? state.peerCount : 0))
+    : state.peerCount
 
   return {
     unlocked: state.unlocked,
@@ -262,7 +339,7 @@ function statusPayload() {
       activeId: state.activeNetworkId || currentNetwork?.id || null,
       networks: networkItems
     },
-    storage: state.storageManager.getStorageInfoSync()
+    storage: storageInfo
   }
 }
 
@@ -270,12 +347,6 @@ async function ensureSettings() {
   state.settings = await loadSettings(storageDir)
   if (state.settings.displayName) {
     state.displayName = state.settings.displayName
-  }
-  if (state.settings.storageQuotaMode) {
-    await state.storageManager.setQuota(
-      state.settings.storageQuotaMode,
-      state.settings.storageQuotaBytes
-    )
   }
 }
 
@@ -293,14 +364,34 @@ async function joinNetworkTopics(networkId: string, swarmTopic: Uint8Array, swar
   const networkDiscovery = swarm.join(swarmTopic, { server: true, client: true })
   await networkDiscovery.flushed().catch(() => {})
 
-  const chunkDiscovery = swarm.join(swarmChunkTopic, { server: true, client: true })
-  await chunkDiscovery.flushed().catch(() => {})
-
+  // GlobalChunkStore manages the chunk topic discovery
   await state.chunkStore.joinNetwork(networkId, swarmChunkTopic)
 
   const topicHex = b4a.toString(swarmTopic, 'hex')
-  state.joinedTopics.set(networkId, { networkDiscovery, chunkDiscovery, swarmTopic, topicHex })
+  const chunkTopicHex = b4a.toString(swarmChunkTopic, 'hex')
+  state.joinedTopics.set(networkId, {
+    networkDiscovery,
+    swarmTopic,
+    swarmChunkTopic,
+    topicHex,
+    chunkTopicHex
+  })
+
+  await swarm.flush().catch(() => {})
   console.log(`[P2PNetwork] Joined network ${networkId} swarm topics (total joined: ${state.joinedTopics.size})`)
+
+  // Re-evaluate any already-connected peers against this newly joined network
+  for (const conn of activeNetworkPeers) {
+    const peerInfo = (conn as any)._peerInfo
+    const netIds = resolveNetworkIds(peerInfo)
+    ;(conn as any)._networkIds = netIds
+    if (!(conn as any)._networkKeyHexes) (conn as any)._networkKeyHexes = new Set<string>()
+    for (const nId of netIds) {
+      const net = state.networks.find((n) => n.id === nId)
+      if (net) (conn as any)._networkKeyHexes.add(net.networkKeyHex)
+    }
+  }
+  recalculateNetworkPeerCounts()
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +400,7 @@ async function joinNetworkTopics(networkId: string, swarmTopic: Uint8Array, swar
 
 async function leaveAllNetworkTopics() {
   for (const [netId, handles] of state.joinedTopics) {
-    await handles.networkDiscovery.destroy().catch(() => {})
-    await handles.chunkDiscovery.destroy().catch(() => {})
+    await handles.networkDiscovery?.destroy().catch(() => {})
     console.log(`[P2PNetwork] Left network ${netId} swarm topics`)
   }
   state.joinedTopics.clear()
@@ -377,7 +467,8 @@ async function openVault(keys: {
       networkLink: keys.networkLink || `p2p-drive://network/${keys.networkKeyHex}?name=${encodeURIComponent(itemTitle)}`,
       networkKeyHex: keys.networkKeyHex,
       topicHex: keys.topicHex || b4a.toString(keys.swarmTopic, 'hex'),
-      createdAt: existingIdx >= 0 ? state.networks[existingIdx].createdAt : Date.now()
+      createdAt: existingIdx >= 0 ? state.networks[existingIdx].createdAt : Date.now(),
+      allocatedBytes: existingIdx >= 0 ? (state.networks[existingIdx].allocatedBytes || 1073741824) : 1073741824
     }
     if (existingIdx >= 0) {
       state.networks[existingIdx] = item
@@ -386,6 +477,7 @@ async function openVault(keys: {
     }
     state.activeNetworkId = netId
     await saveNetworks(storageDir, state.networks)
+    state.storageManager.syncNetworks(state.networks)
 
     state.networkKeyHex = keys.networkKeyHex
     state.networkLink = item.networkLink
@@ -583,17 +675,18 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
   },
 
   async removeNetwork({ id }: { id: string }) {
+    const targetNet = state.networks.find(n => n.id === id)
     // Leave only this network's topics
     const handles = state.joinedTopics.get(id)
     if (handles) {
-      await handles.networkDiscovery.destroy().catch(() => {})
-      await handles.chunkDiscovery.destroy().catch(() => {})
+      await handles.networkDiscovery?.destroy().catch(() => {})
       state.joinedTopics.delete(id)
       await state.chunkStore.leaveNetwork(id)
     }
 
     state.networks = state.networks.filter(n => n.id !== id)
     await saveNetworks(storageDir, state.networks)
+    state.storageManager.removeNetwork(id, targetNet?.networkKeyHex)
 
     if (state.activeNetworkId === id) {
       if (state.networks.length > 0) {
@@ -710,16 +803,22 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
     return statusPayload()
   },
 
-  async setStorageQuota({ mode, quotaBytes }: { mode: 'limited' | 'all'; quotaBytes?: number }) {
-    await state.storageManager.setQuota(mode, quotaBytes)
-    state.settings.storageQuotaMode = mode
-    if (quotaBytes) state.settings.storageQuotaBytes = quotaBytes
-    await saveSettings(storageDir, state.settings)
+  async setNetworkStorageAllocation({ id, allocatedBytes }: { id: string; allocatedBytes: number }) {
+    if (!id || typeof allocatedBytes !== 'number' || allocatedBytes <= 0) {
+      throw new Error('Invalid storage allocation parameters.')
+    }
+    const res = await state.storageManager.setNetworkAllocation(id, allocatedBytes, state.networks)
+    const idx = state.networks.findIndex((n) => n.id === id)
+    if (idx >= 0) {
+      state.networks[idx].allocatedBytes = res.allocatedBytes
+      await saveNetworks(storageDir, state.networks)
+    }
+    emit({ type: 'event', name: 'status', data: statusPayload() })
     return statusPayload()
   },
 
   async getStorageInfo() {
-    return state.storageManager.getStorageInfo()
+    return state.storageManager.getStorageInfo(state.networks)
   }
 }
 
@@ -734,7 +833,8 @@ const mutateMethods = new Set([
   'delete',
   'mkdir',
   'setBlindPeers',
-  'setStorageQuota'
+  'setStorageQuota',
+  'setNetworkStorageAllocation'
 ])
 
 pipe.on('data', async (data: any) => {

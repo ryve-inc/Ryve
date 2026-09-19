@@ -173,7 +173,7 @@
   }
 
   .mnemonic {
-    @apply m-0 whitespace-pre-wrap break-words rounded-2xl border p-4 font-mono text-[0.85rem] leading-relaxed;
+    @apply m-0 whitespace-pre-wrap wrap-break-word rounded-2xl border p-4 font-mono text-[0.85rem] leading-relaxed;
     border-color: #232739;
     background: rgb(11 12 18 / 0.65);
     color: #b6bbd0;

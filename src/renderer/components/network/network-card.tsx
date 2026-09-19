@@ -40,6 +40,13 @@ export function NetworkCard({ network, storage }: NetworkCardProps) {
       ? Math.min(100, Math.round((usedBytes / allocatedBytes) * 100))
       : 0
 
+  const networkTotalAllocated = network.networkTotalAllocatedBytes || allocatedBytes
+  const networkTotalUsed = network.networkTotalUsedBytes || usedBytes
+  const networkTotalPercent =
+    networkTotalAllocated > 0
+      ? Math.min(100, Math.round((networkTotalUsed / networkTotalAllocated) * 100))
+      : 0
+
   return (
     <div
       className={`relative flex flex-col justify-between rounded-3xl border p-5 transition-all duration-200 shadow-lg ${
@@ -69,14 +76,38 @@ export function NetworkCard({ network, storage }: NetworkCardProps) {
           ) : null}
         </div>
 
-        {/* Storage Provided & Used Box */}
+        {/* 1. Network Total Storage Pool Box */}
+        <div className="rounded-2xl bg-fern/20 border border-leaf/30 p-3 space-y-2">
+          <div className="flex items-center justify-between text-xs font-mono">
+            <div className="flex items-center gap-1.5 text-mute">
+              <ShieldCheck className="h-3.5 w-3.5 text-leaf" />
+              <span>Network Total Pool</span>
+            </div>
+            <span className="font-bold text-leaf">{formatBytes(networkTotalAllocated)}</span>
+          </div>
+
+          {/* Network-wide progress bar */}
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-soil">
+            <div
+              className="h-full bg-leaf transition-all duration-300"
+              style={{ width: `${Math.max(2, networkTotalPercent)}%` }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between text-[10px] font-mono text-mute">
+            <span>Network Consumed: <strong className="text-soft">{formatBytes(networkTotalUsed)}</strong> ({networkTotalPercent}%)</span>
+            <span>Pool Free: <strong className="text-soft">{formatBytes(Math.max(0, networkTotalAllocated - networkTotalUsed))}</strong></span>
+          </div>
+        </div>
+
+        {/* 2. This Peer's Storage Provided & Used Box */}
         <div className="rounded-2xl bg-soil/70 border border-line/70 p-3 space-y-2">
           <div className="flex items-center justify-between text-xs font-mono">
             <div className="flex items-center gap-1.5 text-mute">
-              <HardDrive className="h-3.5 w-3.5 text-leaf" />
-              <span>Storage Provided</span>
+              <HardDrive className="h-3.5 w-3.5 text-amber-400" />
+              <span>My Storage Provided</span>
             </div>
-            <span className="font-bold text-leaf">{formatBytes(allocatedBytes)}</span>
+            <span className="font-bold text-amber-400">{formatBytes(allocatedBytes)}</span>
           </div>
 
           {/* Mini progress bar */}
@@ -94,8 +125,8 @@ export function NetworkCard({ network, storage }: NetworkCardProps) {
           </div>
 
           <div className="flex items-center justify-between text-[10px] font-mono text-mute">
-            <span>Used: <strong className="text-soft">{formatBytes(usedBytes)}</strong> ({usedPercent}%)</span>
-            <span>Free: <strong className="text-soft">{formatBytes(Math.max(0, allocatedBytes - usedBytes))}</strong></span>
+            <span>My Used: <strong className="text-soft">{formatBytes(usedBytes)}</strong> ({usedPercent}%)</span>
+            <span>My Free: <strong className="text-soft">{formatBytes(Math.max(0, allocatedBytes - usedBytes))}</strong></span>
           </div>
         </div>
 

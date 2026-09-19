@@ -201,6 +201,21 @@ export class StorageManager {
     return DEFAULT_NETWORK_ALLOCATION_BYTES
   }
 
+  getTotalAllocatedBytes(networks: NetworkStorageItem[] = []): number {
+    if (networks.length > 0) {
+      let sum = 0
+      for (const net of networks) {
+        sum += this.getAllocatedBytesForNetwork(net.networkKeyHex || net.id)
+      }
+      return sum
+    }
+    let sum = 0
+    for (const b of this._allocations.values()) {
+      sum += b
+    }
+    return Math.max(DEFAULT_NETWORK_ALLOCATION_BYTES, sum)
+  }
+
   getUsedBytesForNetwork(networkKeyOrId?: string | null): number {
     if (!networkKeyOrId) {
       let sum = 0

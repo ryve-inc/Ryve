@@ -15,8 +15,7 @@ export function setupConnectionRpc(
   getJoinedNetworkKeys?: () => string[],
   isNetworkJoined?: (networkKeyHex: string) => boolean,
   storageManager?: any,
-  onStorageChanged?: () => void,
-  onPeerHandshake?: (conn: any, networkKeys: string[]) => void
+  onStorageChanged?: () => void
 ) {
   if (conn._chunkRpc) return
 
@@ -41,17 +40,8 @@ export function setupConnectionRpc(
   // 1. Handshake to exchange joined network keys and available storage capacity per-network between peers
   rpc.respond('handshake', async (req: any) => {
     const peerKeys: string[] = Array.isArray(req?.networkKeyHexes) ? req.networkKeyHexes : []
-    let added = false
     for (const k of peerKeys) {
-      if (typeof k === 'string' && k.length > 0) {
-        if (!conn._networkKeyHexes.has(k)) {
-          conn._networkKeyHexes.add(k)
-          added = true
-        }
-      }
-    }
-    if (added && onPeerHandshake) {
-      onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+      if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
     }
     if (req?.availableByNetwork && typeof req.availableByNetwork === 'object') {
       for (const [k, v] of Object.entries(req.availableByNetwork)) {
@@ -106,17 +96,8 @@ export function setupConnectionRpc(
         { timeout: 5000 }
       )
       if (res && Array.isArray(res.networkKeyHexes)) {
-        let added = false
         for (const k of res.networkKeyHexes) {
-          if (typeof k === 'string' && k.length > 0) {
-            if (!conn._networkKeyHexes.has(k)) {
-              conn._networkKeyHexes.add(k)
-              added = true
-            }
-          }
-        }
-        if (added && onPeerHandshake) {
-          onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+          if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
         }
       }
       if (res && res.availableByNetwork && typeof res.availableByNetwork === 'object') {
@@ -127,14 +108,9 @@ export function setupConnectionRpc(
       if (res && typeof res.availableStorageBytes === 'number') {
         conn._availableStorageBytes = res.availableStorageBytes
       }
-    } catch {}
+    } catch { }
   }
-  initiateHandshake().catch(() => {})
-  setTimeout(() => {
-    if (!conn.destroyed && conn._networkKeyHexes.size === 0) {
-      initiateHandshake().catch(() => {})
-    }
-  }, 1000)
+  initiateHandshake().catch(() => { })
 
   // 2. Fetch chunk with integrity check & network verification
   rpc.respond('get-chunk', async (req: any) => {
@@ -148,8 +124,8 @@ export function setupConnectionRpc(
       const actualHash = b4a.toString(hypercoreCrypto.hash(buf), 'hex')
       if (actualHash !== req.hash) {
         console.warn(`[ChunkStore:Server] ⚠️ Local chunk ${req.hash.slice(0, 12)} corrupted/tampered on disk! Purging local file.`)
-        await fs.promises.chmod(chunkPath, 0o666).catch(() => {})
-        await fs.promises.unlink(chunkPath).catch(() => {})
+        await fs.promises.chmod(chunkPath, 0o666).catch(() => { })
+        await fs.promises.unlink(chunkPath).catch(() => { })
         throw new Error(`Chunk ${req.hash.slice(0, 12)} corrupted in local storage`)
       }
       console.log(`[ChunkStore:Server] Serving chunk ${req.hash.slice(0, 12)} (${buf?.byteLength || 0} bytes)`)
@@ -185,14 +161,14 @@ export function setupConnectionRpc(
 
     const chunkPath = path.join(cacheDir, req.hash + '.bin')
     await fs.promises.writeFile(chunkPath, buf)
-    await fs.promises.chmod(chunkPath, 0o444).catch(() => {})
+    await fs.promises.chmod(chunkPath, 0o444).catch(() => { })
 
     if (storageManager) {
       storageManager.recordChunkAdded(req.hash, buf.byteLength, req.networkKeyHex)
     }
 
     if (typeof onStorageChanged === 'function') {
-      try { onStorageChanged() } catch {}
+      try { onStorageChanged() } catch { }
     }
 
     console.log(
@@ -214,7 +190,7 @@ export function setupConnectionRpc(
       const chunkPath = path.join(cacheDir, hash + '.bin')
       try {
         const st = await fs.promises.stat(chunkPath).catch(() => null)
-        await fs.promises.chmod(chunkPath, 0o666).catch(() => {})
+        await fs.promises.chmod(chunkPath, 0o666).catch(() => { })
         await fs.promises.unlink(chunkPath)
         count++
         if (st && typeof st.size === 'number') {
@@ -224,23 +200,23 @@ export function setupConnectionRpc(
       } catch (err) {
         try {
           const st = await fs.promises.stat(chunkPath).catch(() => null)
-          await fs.promises.chmod(chunkPath, 0o777).catch(() => {})
+          await fs.promises.chmod(chunkPath, 0o777).catch(() => { })
           await fs.promises.unlink(chunkPath)
           count++
           if (st && typeof st.size === 'number') {
             freedBytes += st.size
             if (storageManager) storageManager.recordChunkRemoved(hash, st.size, req.networkKeyHex)
           }
-        } catch {}
+        } catch { }
       }
     }
 
     if (storageManager && count > 0) {
-      await storageManager.recalculateUsedBytes().catch(() => {})
+      await storageManager.recalculateUsedBytes().catch(() => { })
     }
 
     if (count > 0 && typeof onStorageChanged === 'function') {
-      try { onStorageChanged() } catch {}
+      try { onStorageChanged() } catch { }
     }
 
     if (count > 0) {
@@ -296,20 +272,20 @@ export function setupConnectionRpc(
         const chunkPath = path.join(cacheDir, c.hash + '.bin')
         try {
           const st = await fs.promises.stat(chunkPath).catch(() => null)
-          await fs.promises.chmod(chunkPath, 0o666).catch(() => {})
+          await fs.promises.chmod(chunkPath, 0o666).catch(() => { })
           await fs.promises.unlink(chunkPath)
           purgedChunks++
           if (st && typeof st.size === 'number') {
             freedBytes += st.size
             if (storageManager) storageManager.recordChunkRemoved(c.hash, st.size, netKey)
           }
-        } catch {}
+        } catch { }
       }
       if (storageManager && purgedChunks > 0) {
-        await storageManager.recalculateUsedBytes().catch(() => {})
+        await storageManager.recalculateUsedBytes().catch(() => { })
       }
       if (purgedChunks > 0 && typeof onStorageChanged === 'function') {
-        try { onStorageChanged() } catch {}
+        try { onStorageChanged() } catch { }
       }
     }
 

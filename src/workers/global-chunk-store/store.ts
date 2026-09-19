@@ -328,9 +328,6 @@ class GlobalChunkStore {
     // 2. Distribute chunks to remote network peers via RPC & prune unassigned local chunk files
     await this._distributeAndPruneChunks(chunkList, allocation, networkKeyHex)
 
-    // 3. Prune cache if quota is exceeded
-    this.pruneStorageQuota().catch(() => {})
-
     return allocation
   }
 
@@ -397,9 +394,14 @@ class GlobalChunkStore {
   }
 
   /**
-   * Automatically prunes oldest chunk files if local cache exceeds max storage bytes.
+   * Automatically prunes oldest unmanaged chunk files if local cache exceeds actual configured storage bytes.
    */
-  async pruneStorageQuota(maxBytes = 500 * 1024 * 1024) {
+  async pruneStorageQuota(maxBytes?: number) {
+    if (!this.storageManager) return
+    const limit = typeof maxBytes === 'number' && maxBytes > 0
+      ? maxBytes
+      : this.storageManager.getTotalAllocatedBytes()
+
     try {
       const files = await fs.promises.readdir(this.cacheDir)
       const chunkFiles: { name: string; path: string; size: number; mtime: number }[] = []
@@ -415,12 +417,12 @@ class GlobalChunkStore {
         } catch {}
       }
 
-      if (totalSize <= maxBytes) return
+      if (totalSize <= limit) return
 
       // Sort by mtime ascending (oldest first)
       chunkFiles.sort((a, b) => a.mtime - b.mtime)
 
-      const targetSize = maxBytes * 0.8
+      const targetSize = limit * 0.9
       let freedBytes = 0
 
       for (const file of chunkFiles) {
@@ -439,7 +441,7 @@ class GlobalChunkStore {
         try { this.onStorageChanged() } catch {}
       }
 
-      console.log(`[ChunkStore:Quota] Storage quota exceeded (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(maxBytes / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of oldest chunks.`)
+      console.log(`[ChunkStore:Quota] Storage quota reached (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(limit / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of unpinned chunks.`)
     } catch {}
   }
 

@@ -29,6 +29,15 @@ export function StorageStatsOverview({
   const freeDisk = storage.totalFreeDiskBytes || 50 * 1024 * 1024 * 1024
   const remainingDrive = storage.remainingDriveBytes || Math.max(0, freeDisk - totalAllocated)
 
+  const totalNetworkPoolAllocated = networks.reduce(
+    (acc, n) => acc + (n.networkTotalAllocatedBytes || n.allocatedBytes || 1073741824),
+    0
+  )
+  const totalNetworkPoolUsed = networks.reduce(
+    (acc, n) => acc + (n.networkTotalUsedBytes || n.usedBytes || 0),
+    0
+  )
+
   const usedPercent =
     totalAllocated > 0
       ? Math.min(100, Math.round((totalUsed / totalAllocated) * 100))
@@ -38,26 +47,28 @@ export function StorageStatsOverview({
     <div className="space-y-4">
       {/* 4 Metrics Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1: Joined Networks */}
+        {/* Card 1: Network Total Storage Pool */}
         <div className="rounded-2xl border border-line bg-moss/60 p-5 backdrop-blur-xl shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-mono text-mute">JOINED NETWORKS</span>
+            <span className="text-xs font-mono text-mute">NETWORK TOTAL POOL</span>
             <Server className="h-4 w-4 text-leaf" />
           </div>
           <div className="mt-3 text-3xl font-mono font-bold text-white">
-            {networks.length}
+            {formatBytes(totalNetworkPoolAllocated)}
           </div>
-          <p className="mt-1 text-xs text-mute">Active P2P workspaces</p>
+          <p className="mt-1 text-xs text-mute">
+            Consumed: <strong className="text-leaf">{formatBytes(totalNetworkPoolUsed)}</strong> across {networks.length} network{networks.length === 1 ? '' : 's'}
+          </p>
         </div>
 
-        {/* Card 2: Total Storage Provided (Sum of all Networks) */}
+        {/* Card 2: Total Storage Provided by this peer */}
         <div
           onClick={onOpenSettings}
           className="rounded-2xl border border-leaf/40 bg-fern/20 p-5 backdrop-blur-xl shadow-lg hover:border-leaf transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-mono text-leaf font-semibold group-hover:underline flex items-center gap-1">
-              <span>TOTAL STORAGE PROVIDED</span>
+              <span>MY STORAGE PROVIDED</span>
               <Sparkles className="h-3 w-3" />
             </span>
             <HardDrive className="h-4 w-4 text-leaf group-hover:scale-110 transition-transform" />
@@ -66,28 +77,28 @@ export function StorageStatsOverview({
             {formatBytes(totalAllocated)}
           </div>
           <p className="mt-1 text-xs text-mute">
-            Sum of storages across {networks.length} network{networks.length === 1 ? '' : 's'} (1 GB default)
+            My contribution across {networks.length} network{networks.length === 1 ? '' : 's'}
           </p>
         </div>
 
-        {/* Card 3: Total Storage Used */}
+        {/* Card 3: Total Storage Used by this peer */}
         <div className="rounded-2xl border border-line bg-moss/60 p-5 backdrop-blur-xl shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-mono text-mute">TOTAL USED STORAGE</span>
+            <span className="text-xs font-mono text-mute">MY USED STORAGE</span>
             <Database className="h-4 w-4 text-leaf" />
           </div>
           <div className="mt-3 text-3xl font-mono font-bold text-leaf">
             {formatBytes(totalUsed)}
           </div>
           <p className="mt-1 text-xs text-mute">
-            {usedPercent}% of total allocated capacity
+            {usedPercent}% of my allocated capacity
           </p>
         </div>
 
         {/* Card 4: Host Storage Drive Space */}
         <div className="rounded-2xl border border-line bg-moss/60 p-5 backdrop-blur-xl shadow-lg">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-mono text-mute">STORAGE DRIVE SPACE</span>
+            <span className="text-xs font-mono text-mute">HOST DRIVE SPACE</span>
             <ShieldCheck className="h-4 w-4 text-leaf" />
           </div>
           <div className="mt-3 text-2xl font-mono font-bold text-white">

@@ -49,6 +49,8 @@ export type NetworkItem = {
   createdAt: number
   allocatedBytes: number
   usedBytes: number
+  networkTotalAllocatedBytes?: number
+  networkTotalUsedBytes?: number
 }
 
 export type NetworkInfo = {
@@ -67,6 +69,8 @@ export type NetworkStorageAllocation = {
   allocatedBytes: number
   usedBytes: number
   availableBytes: number
+  networkTotalAllocatedBytes?: number
+  networkTotalUsedBytes?: number
 }
 
 export type StorageInfo = {

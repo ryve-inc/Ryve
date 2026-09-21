@@ -6,6 +6,15 @@ import hypercoreCrypto from 'hypercore-crypto'
 import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-coding'
 import { setupConnectionRpc } from './rpc-handler'
 import type { GlobalChunkStoreOptions } from './types'
+import { scheduleRebalance, rebalanceNetwork } from './rebalancer'
+import {
+  syncPeerCatalog,
+  syncPublicCatalog,
+  broadcastPublicFile,
+  broadcastRemovePublicFile,
+  broadcastStorageUpdate,
+  broadcastDeleteChunks
+} from './catalog-sync'
 
 /**
  * Stateless GlobalChunkStore for P2P chunk offloading & retrieval.
@@ -198,254 +207,44 @@ class GlobalChunkStore {
     }
   }
 
-  async syncPeerCatalog(conn: any, networkKeyHex: string) {
-    const rpc = (conn as any)._chunkRpc
-    if (!rpc || rpc.closed || !this.publicCatalog || !networkKeyHex) return
-
-    try {
-      const res = await rpc.request('get-public-catalog', { networkKeyHex }, { timeout: 10000 })
-      if (res && Array.isArray(res.manifests) && res.manifests.length > 0) {
-        const matching = res.manifests.filter((m: any) => m && m.networkKeyHex === networkKeyHex)
-        if (matching.length > 0) {
-          const added = await this.publicCatalog.mergeRemoteManifests(networkKeyHex, matching)
-          if (added) {
-            console.log(`[PublicCatalog:Sync] Merged ${matching.length} public file manifest(s) for network ${networkKeyHex.slice(0, 12)}`)
-            if (this.onPublicCatalogUpdated) {
-              this.onPublicCatalogUpdated(networkKeyHex)
-            }
-          }
-          // Schedule background rebalance to equalize storage across peers
-          this.scheduleRebalance(networkKeyHex)
-        }
-      }
-    } catch {}
-  }
-
   _getActiveRpcConnections(): any[] {
     return Array.from(this.swarm.connections).filter(
       (conn: any) => conn._chunkRpc && !conn._chunkRpc.closed && conn._handshakeCompleted === true
     )
   }
 
+  async syncPeerCatalog(conn: any, networkKeyHex: string) {
+    return syncPeerCatalog(this, conn, networkKeyHex)
+  }
+
   async syncPublicCatalog(networkKeyHex: string) {
-    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
-    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-    for (const conn of peers) {
-      await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
-    }
+    return syncPublicCatalog(this, networkKeyHex)
   }
 
   async broadcastPublicFile(manifest: any) {
-    if (!manifest || !manifest.networkKeyHex) return
-    const netKey = manifest.networkKeyHex
-    const candidatePeers = this.getPeersForNetwork(netKey)
-    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-
-    for (const conn of targetPeers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('announce-public-file', { manifest }, { timeout: 5000 })
-      } catch (err: any) {
-        console.warn(`[PublicCatalog:Broadcast] Failed to announce public file to peer:`, err?.message || err)
-      }
-    }
+    return broadcastPublicFile(this, manifest)
   }
 
   async broadcastRemovePublicFile(entryPath: string, networkKeyHex: string) {
-    if (!entryPath || !networkKeyHex) return
-    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
-    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-
-    for (const conn of targetPeers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('remove-public-file', { path: entryPath, networkKeyHex }, { timeout: 5000 })
-      } catch (err: any) {
-        console.warn(`[PublicCatalog:Broadcast] Failed to broadcast public file removal to peer:`, err?.message || err)
-      }
-    }
+    return broadcastRemovePublicFile(this, entryPath, networkKeyHex)
   }
 
-  /**
-   * Broadcasts storage allocation updates to all connected network peers in real-time.
-   */
   async broadcastStorageUpdate(
     networkKeyHex: string,
     allocatedBytes: number,
     usedBytes: number,
     availableBytes: number
   ) {
-    if (!networkKeyHex) return
-    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
-    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-
-    for (const conn of targetPeers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request(
-          'storage-update',
-          {
-            networkKeyHex,
-            allocatedBytes,
-            usedBytes,
-            availableBytes
-          },
-          { timeout: 5000 }
-        )
-      } catch (err: any) {
-        console.warn(`[ChunkStore:BroadcastStorage] Failed to send storage update to peer:`, err?.message || err)
-      }
-    }
+    return broadcastStorageUpdate(this, networkKeyHex, allocatedBytes, usedBytes, availableBytes)
   }
 
-  /**
-   * Debounced rebalance scheduler to avoid churn during peer connection bursts.
-   */
   scheduleRebalance(networkKeyHex: string) {
-    if (!networkKeyHex) return
-    const existing = this._rebalanceTimers.get(networkKeyHex)
-    if (existing) clearTimeout(existing)
-    const timer = setTimeout(() => {
-      this._rebalanceTimers.delete(networkKeyHex)
-      this.rebalanceNetwork(networkKeyHex).catch((err) => {
-        console.warn(`[ChunkStore:Rebalance] Rebalance error for network ${networkKeyHex.slice(0, 12)}:`, err?.message || err)
-      })
-    }, 3000)
-    this._rebalanceTimers.set(networkKeyHex, timer)
+    return scheduleRebalance(this, networkKeyHex)
   }
 
-  /**
-   * Rebalances chunk storage across all online peers in the specified network.
-   * Ensures equal chunk distribution and deletes locally held chunks that belong to remote peers.
-   */
   async rebalanceNetwork(networkKeyHex: string) {
-    if (!networkKeyHex || this._isRebalancing.get(networkKeyHex)) return
-    this._isRebalancing.set(networkKeyHex, true)
-
-    try {
-      if (!this.publicCatalog) return
-      const manifests = await this.publicCatalog.getPublicFiles(networkKeyHex)
-      if (!Array.isArray(manifests) || manifests.length === 0) return
-
-      const nodes = this.getDeterministicNodes(networkKeyHex)
-      // Filter capacity-eligible nodes
-      const eligibleNodes = nodes.filter((n: any) => {
-        if (n.isSelf) return true
-        const avail = n._availableStorageBytes
-        return avail === undefined || avail > 0
-      })
-
-      const P = eligibleNodes.length
-      if (P <= 1) {
-        return // Only self online; no peers to balance with
-      }
-
-      console.log(`[ChunkStore:Rebalance] Starting background chunk rebalance across ${P} online peer(s) for network ${networkKeyHex.slice(0, 12)}...`)
-
-      let totalOffloaded = 0
-      let totalPurged = 0
-      let totalFreedBytes = 0
-      const peerQuotaFull = new Set<string>()
-
-      for (const manifest of manifests) {
-        if (!manifest || !Array.isArray(manifest.chunks) || manifest.chunks.length === 0) continue
-
-        const offloadItems: Array<{ chunkMeta: any; chunkPath: string; targetNode: any }> = []
-
-        for (const chunkMeta of manifest.chunks) {
-          if (!chunkMeta || !chunkMeta.hash) continue
-          const chunkPath = path.join(this.cacheDir, chunkMeta.hash + '.bin')
-          const exists = await fs.promises.stat(chunkPath).then(() => true).catch(() => false)
-          if (!exists) continue
-
-          const chunkIndex = typeof chunkMeta.index === 'number' ? chunkMeta.index : 0
-          const targetIndex = chunkIndex % P
-          const targetNode = eligibleNodes[targetIndex]
-
-          if (targetNode && !targetNode.isSelf && !peerQuotaFull.has(targetNode.id)) {
-            offloadItems.push({ chunkMeta, chunkPath, targetNode })
-          }
-        }
-
-        if (offloadItems.length === 0) continue
-
-        // Offload chunks with bounded concurrency (batch of 4)
-        const CONCURRENCY = 4
-        for (let i = 0; i < offloadItems.length; i += CONCURRENCY) {
-          const batch = offloadItems.slice(i, i + CONCURRENCY).filter(
-            (item) => !peerQuotaFull.has(item.targetNode.id)
-          )
-          if (batch.length === 0) continue
-
-          await Promise.all(
-            batch.map(async ({ chunkMeta, chunkPath, targetNode }) => {
-              const rpc = targetNode._chunkRpc
-              if (!rpc || rpc.closed || peerQuotaFull.has(targetNode.id)) return
-
-              try {
-                const buf: any = await fs.promises.readFile(chunkPath)
-                const res = await rpc.request(
-                  'store-chunk',
-                  {
-                    hash: chunkMeta.hash,
-                    data: b4a.toString(buf, 'hex'),
-                    networkKeyHex
-                  },
-                  { timeout: 60000 }
-                )
-
-                if (res && res.ok) {
-                  // Successfully transferred to target peer! Now delete local copy to equalize storage
-                  await fs.promises.chmod(chunkPath, 0o666).catch(() => {})
-                  await fs.promises.unlink(chunkPath).catch(() => {})
-                  totalOffloaded++
-                  totalPurged++
-                  totalFreedBytes += buf.byteLength
-
-                  if (this.storageManager) {
-                    this.storageManager.recordChunkRemoved(chunkMeta.hash, buf.byteLength, networkKeyHex)
-                  }
-                }
-              } catch (err: any) {
-                const isQuota = err?.message?.includes('QUOTA_EXCEEDED') || err?.message?.includes('quota')
-                if (!peerQuotaFull.has(targetNode.id)) {
-                  peerQuotaFull.add(targetNode.id)
-                  if (targetNode.conn?._availableStorageByNetwork) {
-                    targetNode.conn._availableStorageByNetwork.set(networkKeyHex, 0)
-                  }
-                  console.log(
-                    `[ChunkStore:Rebalance] Peer ${targetNode.id.slice(0, 8)} storage quota reached (${isQuota ? 'Quota full' : err?.message || err}). Retaining remaining chunks locally.`
-                  )
-                }
-              }
-            })
-          )
-          await new Promise((resolve) => setImmediate(resolve))
-        }
-      }
-
-      if (totalPurged > 0) {
-        if (this.storageManager) {
-          await this.storageManager.recalculateUsedBytes().catch(() => {})
-        }
-        if (typeof this.onStorageChanged === 'function') {
-          try { this.onStorageChanged() } catch {}
-        }
-        console.log(
-          `[ChunkStore:Rebalance] Finished: Offloaded ${totalOffloaded} chunk(s) (${(totalFreedBytes / 1024 / 1024).toFixed(2)} MB freed locally). Equal distribution achieved.`
-        )
-      }
-    } catch (err: any) {
-      console.warn(`[ChunkStore:Rebalance] Error during rebalance:`, err?.message || err)
-    } finally {
-      this._isRebalancing.set(networkKeyHex, false)
-    }
+    return rebalanceNetwork(this, networkKeyHex)
   }
-
-
 
   /**
    * Helper function to send allocated chunks over RPC to remote peers with bounded concurrency,
@@ -586,7 +385,6 @@ class GlobalChunkStore {
       }
     }
 
-
     // Strictly select ONLY peers that belong to this network and sort deterministically
     const nodes = this.getDeterministicNodes(networkKeyHex)
 
@@ -603,7 +401,6 @@ class GlobalChunkStore {
 
     return allocation
   }
-
 
   /**
    * Purges specified chunk hashes from local storage.
@@ -640,31 +437,12 @@ class GlobalChunkStore {
     }
   }
 
-
   /**
    * Purges specified chunk hashes from local storage and sends an RPC deletion request
    * to connected network peers to free up peer storage.
    */
   async broadcastDeleteChunks(hashes: string[], networkKeyHex?: string | null) {
-    if (!hashes || hashes.length === 0) return
-    // 1. Purge locally first
-    await this.purgeChunks(hashes)
-
-    // 2. Broadcast RPC delete request to connected network peers
-    const candidatePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
-    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-    let notifiedPeers = 0
-    for (const conn of peers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('delete-chunks', { hashes, networkKeyHex: networkKeyHex || undefined }, { timeout: 10000 })
-        notifiedPeers++
-      } catch (err: any) {
-        console.warn(`[ChunkStore:DeleteRPC] Failed to request chunk deletion from peer:`, err?.message || err)
-      }
-    }
-    console.log(`[ChunkStore:DeleteRPC] Broadcasted deletion for ${hashes.length} chunk(s) to ${notifiedPeers} online peer(s).`)
+    return broadcastDeleteChunks(this, hashes, networkKeyHex)
   }
 
   /**
@@ -773,4 +551,3 @@ class GlobalChunkStore {
 }
 
 export { GlobalChunkStore }
-

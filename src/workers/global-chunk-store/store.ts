@@ -267,6 +267,39 @@ class GlobalChunkStore {
   }
 
   /**
+   * Broadcasts storage allocation updates to all connected network peers in real-time.
+   */
+  async broadcastStorageUpdate(
+    networkKeyHex: string,
+    allocatedBytes: number,
+    usedBytes: number,
+    availableBytes: number
+  ) {
+    if (!networkKeyHex) return
+    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
+    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
+
+    for (const conn of targetPeers) {
+      const rpc = (conn as any)._chunkRpc
+      if (!rpc || rpc.closed) continue
+      try {
+        await rpc.request(
+          'storage-update',
+          {
+            networkKeyHex,
+            allocatedBytes,
+            usedBytes,
+            availableBytes
+          },
+          { timeout: 5000 }
+        )
+      } catch (err: any) {
+        console.warn(`[ChunkStore:BroadcastStorage] Failed to send storage update to peer:`, err?.message || err)
+      }
+    }
+  }
+
+  /**
    * Debounced rebalance scheduler to avoid churn during peer connection bursts.
    */
   scheduleRebalance(networkKeyHex: string) {

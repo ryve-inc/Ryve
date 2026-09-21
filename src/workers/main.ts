@@ -238,6 +238,24 @@ function statusPayload() {
   const storageInfo = state.storageManager.getStorageInfoSync(state.networks)
   const networkItems = state.networks.map((n) => {
     const alloc = storageInfo.networks[n.id]
+    const myAllocatedBytes = alloc?.allocatedBytes || n.allocatedBytes || 1073741824
+    const myUsedBytes = alloc?.usedBytes || 0
+
+    // Sum storage contributions from all active online peers connected on this network
+    const networkPeers = state.chunkStore ? state.chunkStore.getPeersForNetwork(n.networkKeyHex) : []
+    let peersAllocatedBytes = 0
+    let peersUsedBytes = 0
+
+    for (const conn of networkPeers) {
+      const pAlloc = (conn as any)._allocatedStorageByNetwork?.get(n.networkKeyHex) ?? 1073741824
+      const pUsed = (conn as any)._usedStorageByNetwork?.get(n.networkKeyHex) ?? 0
+      peersAllocatedBytes += pAlloc
+      peersUsedBytes += pUsed
+    }
+
+    const networkTotalAllocatedBytes = myAllocatedBytes + peersAllocatedBytes
+    const networkTotalUsedBytes = myUsedBytes + peersUsedBytes
+
     return {
       id: n.id,
       name: n.name,
@@ -246,8 +264,10 @@ function statusPayload() {
       topicHex: n.topicHex,
       peers: state.networkPeerCounts.get(n.id) || 0,
       createdAt: n.createdAt,
-      allocatedBytes: alloc?.allocatedBytes || n.allocatedBytes || 1073741824,
-      usedBytes: alloc?.usedBytes || 0
+      allocatedBytes: myAllocatedBytes,
+      usedBytes: myUsedBytes,
+      networkTotalAllocatedBytes,
+      networkTotalUsedBytes
     }
   })
 
@@ -723,7 +743,22 @@ const handlers: Record<string, (params: any) => Promise<any>> = {
     if (idx >= 0) {
       state.networks[idx].allocatedBytes = res.allocatedBytes
       await saveNetworks(storageDir, state.networks)
+
+      const netKey = state.networks[idx].networkKeyHex
+      if (netKey && state.chunkStore) {
+        const used = state.storageManager.getUsedBytesForNetwork(netKey)
+        const avail = await state.storageManager.getAvailableBytesForNetwork(netKey)
+        state.chunkStore.broadcastStorageUpdate(netKey, res.allocatedBytes, used, avail).catch(() => {})
+      }
     }
+    emit({ type: 'event', name: 'status', data: statusPayload() })
+    return statusPayload()
+  },
+
+  async setStorageQuota({ mode, quotaBytes }: { mode: 'limited' | 'all'; quotaBytes?: number }) {
+    state.settings.storageQuotaMode = mode
+    state.settings.storageQuotaBytes = quotaBytes
+    await saveSettings(storageDir, state.settings)
     emit({ type: 'event', name: 'status', data: statusPayload() })
     return statusPayload()
   },

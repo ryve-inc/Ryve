@@ -31,6 +31,12 @@ export function setupConnectionRpc(
   if (!conn._networkKeyHexes) {
     conn._networkKeyHexes = new Set<string>()
   }
+  if (!conn._allocatedStorageByNetwork) {
+    conn._allocatedStorageByNetwork = new Map<string, number>()
+  }
+  if (!conn._usedStorageByNetwork) {
+    conn._usedStorageByNetwork = new Map<string, number>()
+  }
   if (!conn._availableStorageByNetwork) {
     conn._availableStorageByNetwork = new Map<string, number>()
   }
@@ -48,7 +54,7 @@ export function setupConnectionRpc(
     conn._peerId = b4a.toString(conn.remotePublicKey, 'hex')
   }
 
-  // 1. Handshake to exchange joined network keys and available storage capacity per-network between peers
+  // 1. Handshake to exchange joined network keys and full storage capacity per-network between peers
   rpc.respond('handshake', async (req: any) => {
     if (req?.peerId && !conn._peerId) {
       conn._peerId = req.peerId
@@ -56,6 +62,16 @@ export function setupConnectionRpc(
     const peerKeys: string[] = Array.isArray(req?.networkKeyHexes) ? req.networkKeyHexes : []
     for (const k of peerKeys) {
       if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
+    }
+    if (req?.allocatedByNetwork && typeof req.allocatedByNetwork === 'object') {
+      for (const [k, v] of Object.entries(req.allocatedByNetwork)) {
+        if (typeof v === 'number') conn._allocatedStorageByNetwork.set(k, v)
+      }
+    }
+    if (req?.usedByNetwork && typeof req.usedByNetwork === 'object') {
+      for (const [k, v] of Object.entries(req.usedByNetwork)) {
+        if (typeof v === 'number') conn._usedStorageByNetwork.set(k, v)
+      }
     }
     if (req?.availableByNetwork && typeof req.availableByNetwork === 'object') {
       for (const [k, v] of Object.entries(req.availableByNetwork)) {
@@ -67,9 +83,13 @@ export function setupConnectionRpc(
     }
 
     const myKeys = getJoinedNetworkKeys ? getJoinedNetworkKeys() : []
+    const myAllocatedByNet: Record<string, number> = {}
+    const myUsedByNet: Record<string, number> = {}
     const myAvailableByNet: Record<string, number> = {}
     if (storageManager && myKeys.length > 0) {
       for (const k of myKeys) {
+        myAllocatedByNet[k] = storageManager.getAllocatedBytesForNetwork(k)
+        myUsedByNet[k] = storageManager.getUsedBytesForNetwork(k)
         myAvailableByNet[k] = await storageManager.getAvailableBytesForNetwork(k)
       }
     }
@@ -89,6 +109,8 @@ export function setupConnectionRpc(
       peerId: getLocalPeerId(),
       networkKeyHexes: myKeys,
       availableStorageBytes: defaultAvailable,
+      allocatedByNetwork: myAllocatedByNet,
+      usedByNetwork: myUsedByNet,
       availableByNetwork: myAvailableByNet
     }
   })
@@ -97,9 +119,13 @@ export function setupConnectionRpc(
   const initiateHandshake = async () => {
     try {
       const myKeys = getJoinedNetworkKeys ? getJoinedNetworkKeys() : []
+      const myAllocatedByNet: Record<string, number> = {}
+      const myUsedByNet: Record<string, number> = {}
       const myAvailableByNet: Record<string, number> = {}
       if (storageManager && myKeys.length > 0) {
         for (const k of myKeys) {
+          myAllocatedByNet[k] = storageManager.getAllocatedBytesForNetwork(k)
+          myUsedByNet[k] = storageManager.getUsedBytesForNetwork(k)
           myAvailableByNet[k] = await storageManager.getAvailableBytesForNetwork(k)
         }
       }
@@ -113,6 +139,8 @@ export function setupConnectionRpc(
           peerId: getLocalPeerId(),
           networkKeyHexes: myKeys,
           availableStorageBytes: defaultAvailable,
+          allocatedByNetwork: myAllocatedByNet,
+          usedByNetwork: myUsedByNet,
           availableByNetwork: myAvailableByNet
         },
         { timeout: 5000 }
@@ -123,6 +151,16 @@ export function setupConnectionRpc(
       if (res && Array.isArray(res.networkKeyHexes)) {
         for (const k of res.networkKeyHexes) {
           if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
+        }
+      }
+      if (res && res.allocatedByNetwork && typeof res.allocatedByNetwork === 'object') {
+        for (const [k, v] of Object.entries(res.allocatedByNetwork)) {
+          if (typeof v === 'number') conn._allocatedStorageByNetwork.set(k, v)
+        }
+      }
+      if (res && res.usedByNetwork && typeof res.usedByNetwork === 'object') {
+        for (const [k, v] of Object.entries(res.usedByNetwork)) {
+          if (typeof v === 'number') conn._usedStorageByNetwork.set(k, v)
         }
       }
       if (res && res.availableByNetwork && typeof res.availableByNetwork === 'object') {
@@ -139,9 +177,40 @@ export function setupConnectionRpc(
           onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
         } catch {}
       }
+      if (typeof onStorageChanged === 'function') {
+        try { onStorageChanged() } catch {}
+      }
     } catch { }
   }
   initiateHandshake().catch(() => { })
+
+  // Real-time dynamic peer storage update handler
+  rpc.respond('storage-update', async (req: any) => {
+    if (!req || !req.networkKeyHex) return { ok: false }
+    const netKey = req.networkKeyHex
+    if (typeof req.allocatedBytes === 'number') {
+      conn._allocatedStorageByNetwork.set(netKey, req.allocatedBytes)
+    }
+    if (typeof req.usedBytes === 'number') {
+      conn._usedStorageByNetwork.set(netKey, req.usedBytes)
+    }
+    if (typeof req.availableBytes === 'number') {
+      conn._availableStorageByNetwork.set(netKey, req.availableBytes)
+    }
+    console.log(
+      `[ChunkStore:StorageRPC] Received storage update from peer for network ${netKey.slice(0, 12)}: Allocated ${(
+        (req.allocatedBytes || 0) /
+        1024 /
+        1024
+      ).toFixed(1)} MB`
+    )
+    if (typeof onStorageChanged === 'function') {
+      try {
+        onStorageChanged()
+      } catch {}
+    }
+    return { ok: true }
+  })
 
   // 2. Fetch chunk with integrity check & network verification
   rpc.respond('get-chunk', async (req: any) => {

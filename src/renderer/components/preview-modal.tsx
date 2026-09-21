@@ -1,23 +1,44 @@
+import { useState, useEffect } from 'react'
 import { useDrive } from '@/context/drive-context'
 import { formatBytes } from '@/lib/format'
-import { Download, FileCode, FileText, Film, Image as ImageIcon, Loader2, Music, X } from 'lucide-react'
+import { AlertCircle, Download, FileCode, FileText, Film, Image as ImageIcon, Loader2, Music, X } from 'lucide-react'
 
 export function PreviewModal() {
   const { previewModal, closePreviewModal, downloadSelected } = useDrive()
+  const [playbackError, setPlaybackError] = useState(false)
+
+  useEffect(() => {
+    setPlaybackError(false)
+  }, [previewModal.url, previewModal.open])
 
   if (!previewModal.open) return null
 
   const { name, url, mime, content, error, loading, supported, byteLength } = previewModal
 
-  const isImage = mime?.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)
+  const isImage =
+    mime?.startsWith('image/') ||
+    /\.(png|jpe?g|jpe|jfif|pjpeg|pjp|gif|webp|svg|svgz|bmp|dib|ico|cur|avif|apng|tif|tiff)$/i.test(name)
+
   const isPdf = mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')
-  const isVideo = mime?.startsWith('video/') || /\.(mp4|webm|mkv|mov|ogv)$/i.test(name)
-  const isAudio = mime?.startsWith('audio/') || /\.(mp3|wav|ogg|oga|aac|flac|m4a)$/i.test(name)
+
+  const isVideo =
+    mime?.startsWith('video/') ||
+    /\.(mp4|m4v|mkv|webm|mov|qt|avi|wmv|flv|f4v|ts|m2ts|mts|3gp|3g2|ogv|ogg|mpg|mpeg|mpe|mpv|m2v|vob)$/i.test(name)
+
+  const isAudio =
+    mime?.startsWith('audio/') ||
+    /\.(mp3|wav|wave|ogg|oga|opus|aac|flac|m4a|weba|wma|aiff|aif|aifc|mid|midi|amr|ac3|eac3)$/i.test(name)
+
   const isText =
     content !== null ||
     mime?.startsWith('text/') ||
     mime === 'application/json' ||
-    /\.(txt|md|json|js|ts|jsx|tsx|html|css|csv|py|sh|rs|go|c|cpp|h|hpp|java|xml|yaml|yml|log)$/i.test(name)
+    mime === 'application/xml' ||
+    mime === 'application/javascript' ||
+    mime === 'application/typescript' ||
+    /\.(txt|text|log|err|out|msg|nfo|rtf|conf|cfg|ini|env|properties|gitignore|gitattributes|dockerignore|editorconfig|md|markdown|mdown|mkdn|rst|tex|asciidoc|adoc|json|jsonc|json5|js|mjs|cjs|ts|mts|cts|tsx|jsx|html|htm|xhtml|shtml|vue|svelte|css|scss|sass|less|csv|tsv|tab|py|pyw|ipynb|sh|bash|zsh|ksh|csh|tcsh|fish|bat|cmd|ps1|psm1|rs|go|c|h|cpp|cc|cxx|hpp|hxx|cs|csx|java|kt|kts|swift|d|dart|lua|pl|pm|r|rmd|sql|rb|php|phtml|xml|yaml|yml|toml|diff|patch|proto|graphql|gql|zig|nim|clj|cljs|edn|ex|exs|erl|hrl|hs|lhs|ml|mli|fs|fsi|fsx|v|sv|vhd|vhdl|asm|s)$/i.test(
+      name
+    )
 
   const ext = name.split('.').pop()?.toUpperCase() || 'FILE'
 
@@ -119,11 +140,29 @@ export function PreviewModal() {
                 <span>Download File {byteLength ? `(${formatBytes(byteLength)})` : ''}</span>
               </button>
             </div>
+          ) : playbackError ? (
+            <div className="flex flex-col items-center gap-3 text-center p-8 max-w-md bg-soil/40 rounded-3xl border border-line">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 mb-1">
+                <AlertCircle className="h-8 w-8" />
+              </div>
+              <h4 className="text-base font-bold text-sand">In-App Playback Unavailable</h4>
+              <p className="font-mono text-xs text-mute leading-relaxed">
+                This media container or codec is not natively playable by the embedded engine. Click Download to save and play it in an external media player (e.g. VLC, MPV).
+              </p>
+              <button
+                onClick={downloadSelected}
+                className="mt-3 inline-flex items-center gap-2 rounded-xl bg-leaf px-5 py-2.5 font-mono text-xs font-semibold text-soil hover:bg-leaf/90 transition-all cursor-pointer shadow-md"
+              >
+                <Download className="h-4 w-4" />
+                <span>Download File {byteLength ? `(${formatBytes(byteLength)})` : ''}</span>
+              </button>
+            </div>
           ) : isImage && url ? (
             <div className="h-full w-full flex items-center justify-center p-2">
               <img
                 src={url}
                 alt={name}
+                onError={() => setPlaybackError(true)}
                 className="max-h-full max-w-full rounded-2xl object-contain shadow-2xl border border-line"
               />
             </div>
@@ -139,6 +178,7 @@ export function PreviewModal() {
                 controls
                 autoPlay={false}
                 src={url}
+                onError={() => setPlaybackError(true)}
                 className="max-h-full max-w-full rounded-2xl shadow-2xl border border-line bg-black"
               />
             </div>
@@ -151,7 +191,13 @@ export function PreviewModal() {
                 <p className="font-mono text-sand text-sm font-semibold truncate max-w-70">{name}</p>
                 <p className="font-mono text-mute text-xs mt-0.5">{mime || 'Audio playback'}</p>
               </div>
-              <audio controls src={url} className="w-full rounded-xl" autoPlay={false} />
+              <audio
+                controls
+                src={url}
+                onError={() => setPlaybackError(true)}
+                className="w-full rounded-xl"
+                autoPlay={false}
+              />
             </div>
           ) : isText && content !== null ? (
             <div className="h-full w-full flex flex-col rounded-2xl border border-line bg-soil/90 overflow-hidden shadow-2xl">
@@ -186,3 +232,4 @@ export function PreviewModal() {
     </div>
   )
 }
+

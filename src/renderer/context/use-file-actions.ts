@@ -242,7 +242,12 @@ export function useFileActions({
         for (let i = 0; i < binaryStr.length; i++) {
           bytes[i] = binaryStr.charCodeAt(i)
         }
-        const blob = new Blob([bytes], { type: res.mime || 'application/octet-stream' })
+        let blobType = res.mime || 'application/octet-stream'
+        const lowerName = (res.name || name).toLowerCase()
+        if (lowerName.endsWith('.mkv') && (!res.mime || res.mime === 'video/x-matroska')) {
+          blobType = 'video/webm'
+        }
+        const blob = new Blob([bytes], { type: blobType })
         const blobUrl = URL.createObjectURL(blob)
 
         setPreviewModal({

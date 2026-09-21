@@ -138,8 +138,7 @@ class GlobalChunkStore {
       this.getJoinedNetworkKeys || undefined,
       this.isNetworkJoined || undefined,
       this.storageManager || undefined,
-      this.onStorageChanged || undefined,
-      this.onPeerHandshake || undefined
+      this.onStorageChanged || undefined
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -221,8 +220,8 @@ class GlobalChunkStore {
 
 
   /**
-   * Helper function to send allocated chunks over RPC to remote peers,
-   * retain self-assigned chunks locally, and purge unassigned local chunk files.
+   * Helper function to send allocated chunks over RPC to remote peers with bounded concurrency,
+   * retain self-assigned chunks locally, and purge unassigned local chunk files smoothly.
    */
   async _distributeAndPruneChunks(chunkList: any[], allocation: any, networkKeyHex?: string | null) {
     const offloadedHashes = new Set<string>()
@@ -242,49 +241,67 @@ class GlobalChunkStore {
       const rpc = (node as any)._chunkRpc
       if (!rpc || rpc.closed) continue
 
-      for (const chunk of peerChunks) {
-        try {
-          await rpc.request(
-            'store-chunk',
-            {
-              hash: chunk.hash,
-              data: b4a.toString(chunk.buffer, 'hex'),
-              networkKeyHex: networkKeyHex || undefined
-            },
-            { timeout: 60000 }
-          )
-          offloadedHashes.add(chunk.hash)
-        } catch (err: any) {
-          const isQuota = err?.message?.includes('QUOTA_EXCEEDED')
-          console.warn(
-            `[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer (${isQuota ? 'QUOTA FULL' : err?.message || err}). Retaining locally.`
-          )
-          if (isQuota) {
-            if ((node as any)._availableStorageByNetwork && networkKeyHex) {
-              ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
-            } else {
-              ;(node as any)._availableStorageBytes = 0
+      // Process peer chunks in bounded batches (concurrency of 4)
+      const CONCURRENCY = 4
+      for (let i = 0; i < peerChunks.length; i += CONCURRENCY) {
+        const batch = peerChunks.slice(i, i + CONCURRENCY)
+        await Promise.all(
+          batch.map(async (chunk: any) => {
+            try {
+              await rpc.request(
+                'store-chunk',
+                {
+                  hash: chunk.hash,
+                  data: b4a.toString(chunk.buffer, 'hex'),
+                  networkKeyHex: networkKeyHex || undefined
+                },
+                { timeout: 60000 }
+              )
+              offloadedHashes.add(chunk.hash)
+            } catch (err: any) {
+              const isQuota = err?.message?.includes('QUOTA_EXCEEDED')
+              console.warn(
+                `[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer (${isQuota ? 'QUOTA FULL' : err?.message || err}). Retaining locally.`
+              )
+              if (isQuota) {
+                if ((node as any)._availableStorageByNetwork && networkKeyHex) {
+                  ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
+                } else {
+                  ;(node as any)._availableStorageBytes = 0
+                }
+              }
+              // Retain chunk locally to prevent data loss
+              selfAssignedHashes.add(chunk.hash)
+              if (this.storageManager) {
+                this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
+              }
             }
-          }
-          // Retain chunk locally to prevent data loss
-          selfAssignedHashes.add(chunk.hash)
-          if (this.storageManager) {
-            this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
-          }
-        }
+          })
+        )
+        // Yield to event loop after each batch to keep Hyperswarm UDP ping/ACKs alive
+        await new Promise((resolve) => setImmediate(resolve))
       }
     }
 
     // Purge local chunk files NOT assigned to self that were sent to remote peers or unassigned
     let purgedCount = 0
-    for (const chunk of chunkList) {
-      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      if (!selfAssignedHashes.has(chunk.hash)) {
-        await fs.promises.chmod(localPath, 0o666).catch(() => {})
-        await fs.promises.unlink(localPath).catch(() => {})
-        purgedCount++
-      } else {
-        await fs.promises.chmod(localPath, 0o444).catch(() => {})
+    const PURGE_BATCH = 10
+    for (let i = 0; i < chunkList.length; i += PURGE_BATCH) {
+      const batch = chunkList.slice(i, i + PURGE_BATCH)
+      await Promise.all(
+        batch.map(async (chunk: any) => {
+          const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+          if (!selfAssignedHashes.has(chunk.hash)) {
+            await fs.promises.chmod(localPath, 0o666).catch(() => {})
+            await fs.promises.unlink(localPath).catch(() => {})
+            purgedCount++
+          } else {
+            await fs.promises.chmod(localPath, 0o444).catch(() => {})
+          }
+        })
+      )
+      if (chunkList.length > 20) {
+        await new Promise((resolve) => setImmediate(resolve))
       }
     }
 
@@ -305,12 +322,22 @@ class GlobalChunkStore {
    * Erasure Coding chunk offloading strictly distributed only among peers of the specified network.
    */
   async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, networkKeyHex?: string | null) {
-    // 1. Save all chunks to local peer cache first (Read-Only)
-    for (const chunk of chunkList) {
-      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
-      await fs.promises.chmod(localPath, 0o444).catch(() => {})
+    // 1. Save chunks to local peer cache in bounded batches (concurrency of 8)
+    const WRITE_BATCH = 8
+    for (let i = 0; i < chunkList.length; i += WRITE_BATCH) {
+      const batch = chunkList.slice(i, i + WRITE_BATCH)
+      await Promise.all(
+        batch.map(async (chunk: any) => {
+          const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+          await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
+          await fs.promises.chmod(localPath, 0o444).catch(() => {})
+        })
+      )
+      if (chunkList.length > WRITE_BATCH) {
+        await new Promise((resolve) => setImmediate(resolve))
+      }
     }
+
 
     const selfNode = { isSelf: true }
     // Strictly select ONLY peers that belong to this network
@@ -330,6 +357,7 @@ class GlobalChunkStore {
 
     return allocation
   }
+
 
   /**
    * Purges specified chunk hashes from local storage.

@@ -159,6 +159,18 @@ export function setupConnectionRpc(
       }
     }
 
+    let storageChangeTimer: any = null
+    const triggerStorageChangedThrottled = () => {
+      if (typeof onStorageChanged !== 'function') return
+      if (storageChangeTimer) return
+      storageChangeTimer = setTimeout(() => {
+        storageChangeTimer = null
+        try {
+          if (typeof onStorageChanged === 'function') onStorageChanged()
+        } catch { }
+      }, 400)
+    }
+
     const chunkPath = path.join(cacheDir, req.hash + '.bin')
     await fs.promises.writeFile(chunkPath, buf)
     await fs.promises.chmod(chunkPath, 0o444).catch(() => { })
@@ -167,9 +179,7 @@ export function setupConnectionRpc(
       storageManager.recordChunkAdded(req.hash, buf.byteLength, req.networkKeyHex)
     }
 
-    if (typeof onStorageChanged === 'function') {
-      try { onStorageChanged() } catch { }
-    }
+    triggerStorageChangedThrottled()
 
     console.log(
       `[ChunkStore:Cache] Stored chunk ${req.hash.slice(0, 12)} (${buf.byteLength} bytes, Read-Only) for network ${req.networkKeyHex ? req.networkKeyHex.slice(0, 12) : 'direct'}`
@@ -224,6 +234,7 @@ export function setupConnectionRpc(
     } else {
       console.log(`[ChunkStore:RPC] Verified ${req.hashes.length} chunk hashes (already purged or not stored on this node)`)
     }
+
     return { ok: true, count, freedBytes }
   })
 

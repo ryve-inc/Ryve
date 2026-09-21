@@ -4,7 +4,59 @@ import b4a from 'b4a'
 
 import { decodeBuffer, encodeBuffer } from '../erasure-coding'
 import { normalizePath } from './path-utils'
-import { decryptBuffer, hashChunk } from './crypto-utils'
+import { decryptBuffer, decryptBlock, deriveBlockNonce, hashChunk } from './crypto-utils'
+
+async function fetchBlockShards(
+  chunkStore: any,
+  blockChunks: any[],
+  k: number,
+  networkKeyHex: string | null,
+  fetchedBuffers: Map<string, Uint8Array>
+): Promise<Map<number, Uint8Array>> {
+  const availableShardsMap = new Map<number, Uint8Array>()
+
+  for (const chunkMeta of blockChunks) {
+    const cached = fetchedBuffers.get(chunkMeta.hash)
+    if (cached) {
+      const shardIdx = chunkMeta.shardIndex !== undefined ? chunkMeta.shardIndex : chunkMeta.index
+      availableShardsMap.set(shardIdx, cached)
+    }
+  }
+
+  if (availableShardsMap.size >= k) {
+    return availableShardsMap
+  }
+
+  const pending = blockChunks.filter(
+    (c: any) => !availableShardsMap.has(c.shardIndex !== undefined ? c.shardIndex : c.index)
+  )
+
+  // Fetch chunks in bounded batches (concurrency of 4)
+  const CONCURRENCY = 4
+  for (let i = 0; i < pending.length && availableShardsMap.size < k; i += CONCURRENCY) {
+    const batch = pending.slice(i, i + CONCURRENCY)
+    await Promise.all(
+      batch.map(async (chunkMeta: any) => {
+        if (availableShardsMap.size >= k) return
+        if (!chunkStore) return
+        try {
+          const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
+          const actualHash = hashChunk(chunkBuf)
+          if (actualHash === chunkMeta.hash) {
+            fetchedBuffers.set(chunkMeta.hash, chunkBuf)
+            const shardIdx = chunkMeta.shardIndex !== undefined ? chunkMeta.shardIndex : chunkMeta.index
+            availableShardsMap.set(shardIdx, chunkBuf)
+          }
+        } catch (err: any) {
+          console.warn(`[User:Download] Chunk ${chunkMeta.hash.slice(0, 12)} fetch failed:`, err?.message || err)
+        }
+      })
+    )
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  return availableShardsMap
+}
 
 export async function downloadFile({
   drive,
@@ -46,18 +98,28 @@ export async function downloadFile({
 
   console.log(`[User:Download] Reassembling chunks for ${p} (Public: ${isPublicFile})...`)
 
-  let encryptedBuffer: Uint8Array
-  let missingShardsDetected = false
+  // Prepare destination path
+  let finalDest = destLocalPath
+  const expectedExt = path.extname(meta.sourceName || p)
+  if (expectedExt && !path.extname(finalDest)) {
+    finalDest += expectedExt
+  }
+  await fs.promises.mkdir(path.dirname(finalDest), { recursive: true })
+
   const fetchedBuffers = new Map<string, Uint8Array>()
+  let totalDecryptedBytes = 0
 
   if (meta.erasureCoding) {
     const { k, m } = meta.erasureCoding
     const totalShardsPerBlock = k + m
     const numBlocks = meta.erasureCoding.numBlocks || (meta.chunks ? Math.ceil(meta.chunks.length / totalShardsPerBlock) : 1)
-    const maxBlockSize = meta.erasureCoding.blockSize || (1 * 1024 * 1024)
-    const totalEncryptedSize = meta.encryptedSize || (meta.originalSize ? meta.originalSize + 16 : 0)
+    const maxBlockSize = meta.erasureCoding.blockSize || (2 * 1024 * 1024)
+    const totalOriginalSize = meta.originalSize || (meta.byteLength || 0)
+    const isBlockEncrypted = Boolean(meta.erasureCoding.blockEncrypted)
 
-    console.log(`[User:Download] Reassembling ${meta.chunks.length} chunks across ${numBlocks} block(s) (K=${k}, M=${m}) for ${p}...`)
+    console.log(
+      `[User:Download] Reassembling ${meta.chunks.length} chunks across ${numBlocks} block(s) (K=${k}, M=${m}, BlockEncrypted=${isBlockEncrypted}) for ${p}...`
+    )
 
     // Group chunk metadata by blockIndex
     const blocksMap = new Map<number, any[]>()
@@ -67,90 +129,108 @@ export async function downloadFile({
       blocksMap.get(bIdx)!.push(chunkMeta)
     }
 
-    // Launch parallel fetch requests for all chunks
-    const fetchPromises = meta.chunks.map(async (chunkMeta: any) => {
-      if (!chunkStore) return
+    if (isBlockEncrypted) {
+      // -----------------------------------------------------------------------
+      // STREAMING RECONSTRUCTION: Decode, Decrypt, and Write Block-by-Block
+      // -----------------------------------------------------------------------
+      let outHandle: any = null
+      let outFd: number | null = null
+
       try {
-        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
-        const actualHash = hashChunk(chunkBuf)
-        if (actualHash === chunkMeta.hash) {
-          fetchedBuffers.set(chunkMeta.hash, chunkBuf)
+        if (typeof fs.promises.open === 'function') {
+          outHandle = await fs.promises.open(finalDest, 'w')
         } else {
-          console.warn(`[User:Download] Hash mismatch for chunk ${chunkMeta.hash.slice(0, 12)}`)
+          outFd = (fs as any).openSync(finalDest, 'w')
         }
-      } catch (err: any) {
-        console.warn(`[User:Download] Chunk ${chunkMeta.hash.slice(0, 12)} fetch failed:`, err?.message || err)
-      }
-    })
 
-    await Promise.allSettled(fetchPromises)
+        let currentWriteOffset = 0
 
-    const reconstructedBlockBuffers: Uint8Array[] = []
+        for (let b = 0; b < numBlocks; b++) {
+          const blockChunks = blocksMap.get(b) || []
+          const availableShardsMap = await fetchBlockShards(chunkStore, blockChunks, k, networkKeyHex, fetchedBuffers)
 
-    for (let b = 0; b < numBlocks; b++) {
-      const blockChunks = blocksMap.get(b) || []
-      const availableShardsMap = new Map<number, Uint8Array>()
+          if (availableShardsMap.size < k) {
+            throw new Error(
+              `File unavailable: Block ${b + 1}/${numBlocks} received ${availableShardsMap.size}/${k + m} shards. Need at least K=${k} active peers.`
+            )
+          }
 
-      for (const chunkMeta of blockChunks) {
-        const buf = fetchedBuffers.get(chunkMeta.hash)
-        if (buf) {
-          const rawShardIdx = chunkMeta.shardIndex !== undefined ? chunkMeta.shardIndex : (chunkMeta.index % totalShardsPerBlock)
-          const shardIdx = rawShardIdx % totalShardsPerBlock
-          availableShardsMap.set(shardIdx, buf)
+          const expectedOriginalBlockSize = Math.min(maxBlockSize, totalOriginalSize - b * maxBlockSize)
+          const expectedEncryptedBlockSize = expectedOriginalBlockSize + 16 // 16-byte Poly1305 MAC tag
+          const blockChunkSize = Math.ceil(expectedEncryptedBlockSize / k)
+
+          const blockDecoded = decodeBuffer(availableShardsMap, k, m, blockChunkSize, expectedEncryptedBlockSize)
+          const blockNonce = deriveBlockNonce(meta.nonce, b)
+          const blockDecrypted = decryptBlock(blockDecoded, effectiveKey, blockNonce)
+
+          if (outHandle) {
+            await outHandle.write(blockDecrypted, 0, blockDecrypted.byteLength, currentWriteOffset)
+          } else {
+            ;(fs as any).writeSync(outFd!, blockDecrypted, 0, blockDecrypted.byteLength, currentWriteOffset)
+          }
+
+          currentWriteOffset += blockDecrypted.byteLength
+          totalDecryptedBytes += blockDecrypted.byteLength
+
+          if (numBlocks > 1) {
+            await new Promise((resolve) => setImmediate(resolve))
+          }
         }
+      } finally {
+        if (outHandle) await outHandle.close().catch(() => {})
+        if (outFd !== null) try { (fs as any).closeSync(outFd) } catch {}
+      }
+    } else {
+      // -----------------------------------------------------------------------
+      // LEGACY RECONSTRUCTION: Full-Buffer Reassembly & Decryption
+      // -----------------------------------------------------------------------
+      const reconstructedBlockBuffers: Uint8Array[] = []
+      const totalEncryptedSize = meta.encryptedSize || (meta.originalSize ? meta.originalSize + 16 : 0)
+
+      for (let b = 0; b < numBlocks; b++) {
+        const blockChunks = blocksMap.get(b) || []
+        const availableShardsMap = await fetchBlockShards(chunkStore, blockChunks, k, networkKeyHex, fetchedBuffers)
+
+        if (availableShardsMap.size < k) {
+          throw new Error(
+            `File unavailable: Block ${b + 1}/${numBlocks} received ${availableShardsMap.size}/${k + m} shards. Need at least K=${k} active peers.`
+          )
+        }
+
+        const blockStart = b * maxBlockSize
+        const blockEnd = Math.min(blockStart + maxBlockSize, totalEncryptedSize)
+        const currentBlockEncryptedSize = blockEnd - blockStart
+        const blockChunkSize = Math.ceil(currentBlockEncryptedSize / k)
+
+        const blockDecoded = decodeBuffer(availableShardsMap, k, m, blockChunkSize, currentBlockEncryptedSize)
+        reconstructedBlockBuffers.push(blockDecoded)
       }
 
-      if (availableShardsMap.size < k) {
-        throw new Error(
-          `File unavailable: Block ${b + 1}/${numBlocks} received ${availableShardsMap.size}/${k + m} shards. Need at least K=${k} active peers.`
-        )
-      }
-
-      const blockStart = b * maxBlockSize
-      const blockEnd = Math.min(blockStart + maxBlockSize, totalEncryptedSize)
-      const currentBlockEncryptedSize = blockEnd - blockStart
-      const blockChunkSize = Math.ceil(currentBlockEncryptedSize / k)
-
-      const blockDecoded = decodeBuffer(availableShardsMap, k, m, blockChunkSize, currentBlockEncryptedSize)
-      reconstructedBlockBuffers.push(blockDecoded)
+      const encryptedBuffer = b4a.concat(reconstructedBlockBuffers)
+      const decryptedBuffer = decryptBuffer(encryptedBuffer, effectiveKey, meta.nonce)
+      await fs.promises.writeFile(finalDest, decryptedBuffer)
+      totalDecryptedBytes = decryptedBuffer.byteLength
     }
-
-    encryptedBuffer = b4a.concat(reconstructedBlockBuffers)
   } else {
-    // Legacy download path for backward compatibility
+    // -------------------------------------------------------------------------
+    // LEGACY FALLBACK (Non-EC files)
+    // -------------------------------------------------------------------------
     const encryptedChunks: Uint8Array[] = []
     for (const chunkMeta of meta.chunks) {
-      if (!chunkStore) {
-        throw new Error('Global chunk store unavailable.')
+      if (!chunkStore) throw new Error('Global chunk store unavailable.')
+      const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
+      const actualHash = hashChunk(chunkBuf)
+      if (actualHash !== chunkMeta.hash) {
+        throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
       }
-      try {
-        const chunkBuf = await chunkStore.fetchChunk(chunkMeta.hash, networkKeyHex, 60000)
-        const actualHash = hashChunk(chunkBuf)
-        if (actualHash !== chunkMeta.hash) {
-          throw new Error(`Integrity mismatch on chunk ${chunkMeta.hash.slice(0, 12)}`)
-        }
-        encryptedChunks.push(chunkBuf)
-        fetchedBuffers.set(chunkMeta.hash, chunkBuf)
-      } catch (err: any) {
-        console.error(`[User:Download] Failed to fetch chunk ${chunkMeta.hash.slice(0, 12)}:`, err?.message || err)
-        throw new Error(`File unavailable: Peer hosting chunk ${chunkMeta.hash.slice(0, 12)} is offline.`)
-      }
+      encryptedChunks.push(chunkBuf)
+      fetchedBuffers.set(chunkMeta.hash, chunkBuf)
     }
-    encryptedBuffer = b4a.concat(encryptedChunks)
+    const encryptedBuffer = b4a.concat(encryptedChunks)
+    const decryptedBuffer = decryptBuffer(encryptedBuffer, effectiveKey, meta.nonce)
+    await fs.promises.writeFile(finalDest, decryptedBuffer)
+    totalDecryptedBytes = decryptedBuffer.byteLength
   }
-
-  // Decrypt full buffer using master encryption key or network key and saved nonce
-  const decryptedBuffer = decryptBuffer(encryptedBuffer, effectiveKey, meta.nonce)
-
-  // Write uncorrupted, decrypted file to destination path
-  let finalDest = destLocalPath
-  const expectedExt = path.extname(meta.sourceName || p)
-  if (expectedExt && !path.extname(finalDest)) {
-    finalDest += expectedExt
-  }
-
-  await fs.promises.mkdir(path.dirname(finalDest), { recursive: true })
-  await fs.promises.writeFile(finalDest, decryptedBuffer)
 
   const isPublic = isPublicFile || meta.isPrivate === false
 
@@ -182,7 +262,8 @@ export async function downloadFile({
     await chunkStore.purgeChunks(meta.chunks.map((c: any) => c.hash))
   }
 
-  console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${decryptedBuffer.byteLength} bytes for ${p}`)
+  console.log(`[User:Download] ✓ SUCCESS: Reassembled and decrypted ${totalDecryptedBytes} bytes for ${p}`)
 
   return { path: p, destLocalPath: finalDest, verified: true }
 }
+

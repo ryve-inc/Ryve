@@ -6,8 +6,13 @@ export type NavName = 'home' | 'files' | 'shared' | 'settings'
 export type SelectedEntry = {
   path: string
   source: 'vault' | 'share'
+  name?: string
   shareId?: string | null
   manifest?: ChunkManifest
+  isPrivate?: boolean
+  uploaderIdentity?: string | null
+  isOwner?: boolean
+  byteLength?: number
 }
 
 export type InviteModalState = {
@@ -39,6 +44,9 @@ export type PreviewModalState = {
   mime: string | null
   content: string | null
   error: string | null
+  loading?: boolean
+  supported?: boolean
+  byteLength?: number
 }
 
 export type DriveContextValue = {

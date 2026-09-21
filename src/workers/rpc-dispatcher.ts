@@ -35,6 +35,66 @@ export const mutateMethods = new Set([
   'setNetworkStorageAllocation'
 ])
 
+export function inferMimeType(name: string, fallbackMime: string | null): string {
+  if (fallbackMime && fallbackMime !== 'application/octet-stream') return fallbackMime
+  const ext = name.split('.').pop()?.toLowerCase() || ''
+  switch (ext) {
+    // Images
+    case 'png': return 'image/png'
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg'
+    case 'gif': return 'image/gif'
+    case 'webp': return 'image/webp'
+    case 'svg': return 'image/svg+xml'
+    case 'bmp': return 'image/bmp'
+    case 'ico': return 'image/x-icon'
+    // Videos
+    case 'mp4': return 'video/mp4'
+    case 'webm': return 'video/webm'
+    case 'mkv': return 'video/x-matroska'
+    case 'mov': return 'video/quicktime'
+    case 'ogg':
+    case 'ogv': return 'video/ogg'
+    // Audio
+    case 'mp3': return 'audio/mpeg'
+    case 'wav': return 'audio/wav'
+    case 'oga': return 'audio/ogg'
+    case 'aac': return 'audio/aac'
+    case 'flac': return 'audio/flac'
+    case 'm4a': return 'audio/mp4'
+    // PDF
+    case 'pdf': return 'application/pdf'
+    // Text / Code
+    case 'txt': return 'text/plain'
+    case 'md': return 'text/markdown'
+    case 'json': return 'application/json'
+    case 'js':
+    case 'mjs':
+    case 'cjs': return 'text/javascript'
+    case 'ts':
+    case 'tsx':
+    case 'jsx': return 'text/typescript'
+    case 'html':
+    case 'htm': return 'text/html'
+    case 'css': return 'text/css'
+    case 'csv': return 'text/csv'
+    case 'py': return 'text/x-python'
+    case 'sh': return 'text/x-sh'
+    case 'rs': return 'text/rust'
+    case 'go': return 'text/x-go'
+    case 'c':
+    case 'h': return 'text/x-c'
+    case 'cpp':
+    case 'hpp': return 'text/x-c++'
+    case 'java': return 'text/x-java'
+    case 'xml': return 'text/xml'
+    case 'yaml':
+    case 'yml': return 'text/yaml'
+    case 'log': return 'text/plain'
+    default: return fallbackMime || 'application/octet-stream'
+  }
+}
+
 export function createRpcHandlers(
   state: State,
   swarm: any,
@@ -214,7 +274,7 @@ export function createRpcHandlers(
 
     async upload({ localPath, destPath, mime, isPrivate }: { localPath: string; destPath: string; mime?: string; isPrivate?: boolean }) {
       if (!state.vault) throw new Error('Not unlocked')
-      const res = await state.vault.upload(localPath, destPath, mime, isPrivate !== false)
+      const res = await state.vault.upload(localPath, destPath, mime, isPrivate !== false, state.identityHex)
       emit({ type: 'event', name: 'status', data: statusPayload(state) })
       return res
     },
@@ -224,9 +284,59 @@ export function createRpcHandlers(
       return state.vault.download(entryPath, destLocalPath)
     },
 
+    async preview({ path: entryPath }: { path: string }) {
+      if (!state.vault) throw new Error('Not unlocked')
+      const { buffer, mime: rawMime, name } = await state.vault.readBuffer(entryPath)
+      const mime = inferMimeType(name, rawMime)
+
+      const isImage = mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)
+      const isVideo = mime.startsWith('video/') || /\.(mp4|webm|mkv|mov|ogv)$/i.test(name)
+      const isAudio = mime.startsWith('audio/') || /\.(mp3|wav|ogg|oga|aac|flac|m4a)$/i.test(name)
+      const isPdf = mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')
+      const isText = mime.startsWith('text/') || mime === 'application/json' || /\.(txt|md|json|js|ts|jsx|tsx|html|css|csv|py|sh|rs|go|c|cpp|h|hpp|java|xml|yaml|yml|log)$/i.test(name)
+
+      const supported = isImage || isVideo || isAudio || isPdf || isText
+
+      if (!supported) {
+        return {
+          supported: false,
+          mime,
+          name,
+          byteLength: buffer.byteLength
+        }
+      }
+
+      if (isText) {
+        let textContent: string
+        try {
+          textContent = b4a.toString(buffer, 'utf-8')
+        } catch {
+          textContent = ''
+        }
+        return {
+          supported: true,
+          isText: true,
+          content: textContent,
+          mime,
+          name,
+          byteLength: buffer.byteLength
+        }
+      }
+
+      const base64Data = b4a.toString(buffer, 'base64')
+      return {
+        supported: true,
+        isText: false,
+        data: base64Data,
+        mime,
+        name,
+        byteLength: buffer.byteLength
+      }
+    },
+
     async delete({ path: entryPath }: { path: string }) {
       if (!state.vault) throw new Error('Not unlocked')
-      const res = await state.vault.delete(entryPath)
+      const res = await state.vault.delete(entryPath, state.identityHex)
       emit({ type: 'event', name: 'status', data: statusPayload(state) })
       return res
     },

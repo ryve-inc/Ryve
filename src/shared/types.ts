@@ -37,6 +37,8 @@ export type DriveEntry = {
   metadata: Record<string, unknown> | null
   chunkCount?: number
   isPrivate?: boolean
+  uploaderIdentity?: string | null
+  isOwner?: boolean
 }
 
 export type NetworkItem = {

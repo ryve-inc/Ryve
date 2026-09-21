@@ -5,8 +5,16 @@ import { useDrive } from '@/context/drive-context'
 import { Eye } from 'lucide-react'
 
 export function DetailPanel() {
-  const { detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
+  const { status, detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
   if (!detailOpen) return null
+
+  const isOwner = selectedEntry
+    ? selectedEntry.isPrivate !== false ||
+      selectedEntry.isOwner === true ||
+      (Boolean(status.identity) &&
+        (selectedEntry.uploaderIdentity === status.identity ||
+          (selectedEntry.manifest?.metadata as any)?.uploaderIdentity === status.identity))
+    : false
 
   return (
     <aside className="flex w-[min(360px,40vw)] flex-col gap-3 overflow-auto custom-scrollbar border-l border-line bg-moss/90 p-4 backdrop-blur-xl">
@@ -26,7 +34,7 @@ export function DetailPanel() {
           <span>Preview</span>
         </button>
         <DownloadButton />
-        {selectedEntry?.source === 'vault' ? <DeleteButton /> : null}
+        {isOwner ? <DeleteButton /> : null}
       </div>
     </aside>
   )

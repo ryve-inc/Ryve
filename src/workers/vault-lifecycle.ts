@@ -133,11 +133,13 @@ export async function openVault(
       networkKeyHex: state.networkKeyHex,
       publicCatalog,
       blinds: state.blinds,
-      chunkStore: state.chunkStore
+      chunkStore: state.chunkStore,
+      identityHex: state.identityHex
     })
     await state.vault.open()
   } else {
     state.vault.networkKeyHex = state.networkKeyHex
+    state.vault.identityHex = state.identityHex
   }
 
   state.unlocked = true

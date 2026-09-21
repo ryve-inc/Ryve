@@ -34,11 +34,20 @@ export function useFileActions({
   }, [])
 
   const showDetail = useCallback(
-    async (path: string) => {
+    async (path: string, entryInfo?: Partial<DriveEntry>) => {
       const requestId = ++detailRequestId.current
       setDetailOpen(true)
       setDetailName(path.split('/').filter(Boolean).pop() || path)
       setChunkList('Loading…')
+      setSelectedEntry({
+        path,
+        source: 'vault',
+        name: entryInfo?.name || path.split('/').filter(Boolean).pop() || path,
+        isPrivate: entryInfo?.isPrivate,
+        uploaderIdentity: entryInfo?.uploaderIdentity,
+        isOwner: entryInfo?.isOwner,
+        byteLength: entryInfo?.byteLength
+      })
       try {
         const manifest = await rpc<ChunkManifest>('getChunkManifest', { path })
         if (requestId !== detailRequestId.current) return
@@ -48,11 +57,16 @@ export function useFileActions({
             .map((c) => `#${c.index}  ${c.hash}\n  offset=${c.offset}  len=${c.length}`)
             .join('\n\n')
         )
-        setSelectedEntry({
+        setSelectedEntry((prev) => ({
           path,
           source: 'vault',
+          name: prev?.name || path.split('/').filter(Boolean).pop() || path,
+          isPrivate: prev?.isPrivate !== undefined ? prev.isPrivate : (manifest.metadata?.isPrivate as boolean | undefined),
+          uploaderIdentity: prev?.uploaderIdentity || (manifest.metadata?.uploaderIdentity as string | undefined),
+          isOwner: prev?.isOwner,
+          byteLength: manifest.byteLength,
           manifest
-        })
+        }))
       } catch (err) {
         if (requestId !== detailRequestId.current) return
         setDetailMeta(err instanceof Error ? err.message : String(err))
@@ -76,8 +90,7 @@ export function useFileActions({
         await refreshFiles()
         return
       }
-      setSelectedEntry({ ...entry, source: 'vault' })
-      await showDetail(entry.path)
+      await showDetail(entry.path, entry)
     },
     [refreshFiles, showDetail]
   )
@@ -150,44 +163,127 @@ export function useFileActions({
     url: null,
     mime: null,
     content: null,
-    error: null
+    error: null,
+    loading: false,
+    supported: true,
+    byteLength: 0
   })
 
   const closePreviewModal = useCallback(() => {
     setPreviewModal((p) => {
-      if (p.url) URL.revokeObjectURL(p.url)
-      return { open: false, name: '', url: null, mime: null, content: null, error: null }
+      if (p.url) {
+        try {
+          URL.revokeObjectURL(p.url)
+        } catch {}
+      }
+      return { open: false, name: '', url: null, mime: null, content: null, error: null, loading: false, supported: true, byteLength: 0 }
     })
   }, [])
 
   const previewSelected = useCallback(async () => {
     if (!selectedEntry) return
     const name = selectedEntry.path.split('/').filter(Boolean).pop() || 'file'
-    showToast('Fetching chunks from network peers…')
-    setPreviewModal({ open: true, name, url: null, mime: null, content: null, error: null })
+    setPreviewModal({
+      open: true,
+      name,
+      url: null,
+      mime: null,
+      content: null,
+      error: null,
+      loading: true,
+      supported: true,
+      byteLength: 0
+    })
+
     try {
-      const dest = await getBridge().chooseDownloadPath(name)
-      if (!dest) {
-        closePreviewModal()
+      const res = await rpc<{
+        supported: boolean
+        isText?: boolean
+        content?: string
+        data?: string
+        mime: string
+        name: string
+        byteLength: number
+      }>('preview', { path: selectedEntry.path })
+
+      if (!res.supported) {
+        setPreviewModal({
+          open: true,
+          name: res.name || name,
+          url: null,
+          mime: res.mime || null,
+          content: null,
+          error: null,
+          loading: false,
+          supported: false,
+          byteLength: res.byteLength || 0
+        })
         return
       }
-      await rpc<{ verified?: boolean }>('download', {
-        path: selectedEntry.path,
-        destLocalPath: dest
+
+      if (res.isText) {
+        setPreviewModal({
+          open: true,
+          name: res.name || name,
+          url: null,
+          mime: res.mime || null,
+          content: res.content || '',
+          error: null,
+          loading: false,
+          supported: true,
+          byteLength: res.byteLength || 0
+        })
+        return
+      }
+
+      if (res.data) {
+        const binaryStr = atob(res.data)
+        const bytes = new Uint8Array(binaryStr.length)
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i)
+        }
+        const blob = new Blob([bytes], { type: res.mime || 'application/octet-stream' })
+        const blobUrl = URL.createObjectURL(blob)
+
+        setPreviewModal({
+          open: true,
+          name: res.name || name,
+          url: blobUrl,
+          mime: res.mime || null,
+          content: null,
+          error: null,
+          loading: false,
+          supported: true,
+          byteLength: res.byteLength || 0
+        })
+        return
+      }
+
+      setPreviewModal({
+        open: true,
+        name: res.name || name,
+        url: null,
+        mime: res.mime || null,
+        content: null,
+        error: null,
+        loading: false,
+        supported: false,
+        byteLength: res.byteLength || 0
       })
-      showToast('File downloaded & verified!')
-      closePreviewModal()
-    } catch (err) {
+    } catch (err: any) {
       setPreviewModal({
         open: true,
         name,
         url: null,
         mime: null,
         content: null,
-        error: err instanceof Error ? err.message : String(err)
+        error: err instanceof Error ? err.message : String(err),
+        loading: false,
+        supported: false,
+        byteLength: 0
       })
     }
-  }, [closePreviewModal, selectedEntry, showToast])
+  }, [selectedEntry])
 
   const downloadSelected = useCallback(async () => {
     if (!selectedEntry) return
@@ -206,16 +302,18 @@ export function useFileActions({
   }, [selectedEntry, showToast])
 
   const deleteSelected = useCallback(async () => {
-    if (!selectedEntry || selectedEntry.source !== 'vault') {
-      showToast('Delete is only available in My Drive')
-      return
-    }
+    if (!selectedEntry) return
     const ok = await askConfirm('Delete file?', selectedEntry.path)
     if (!ok) return
-    await rpc('delete', { path: selectedEntry.path })
-    closeDetail()
-    await refreshFiles()
-    rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
+    try {
+      await rpc('delete', { path: selectedEntry.path })
+      showToast('File deleted')
+      closeDetail()
+      await refreshFiles()
+      rpc<AppStatus>('getStatus').then((s) => setStatus((prev) => ({ ...prev, ...s }))).catch(() => {})
+    } catch (err: any) {
+      showToast(err?.message || 'Delete failed')
+    }
   }, [askConfirm, closeDetail, refreshFiles, selectedEntry, setStatus, showToast])
 
   const setCurrentDir = useCallback((dir: string) => {

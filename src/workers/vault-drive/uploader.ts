@@ -15,7 +15,8 @@ export async function uploadFile({
   localPath,
   destPath,
   mime = null,
-  isPrivate = true
+  isPrivate = true,
+  uploaderIdentity = null
 }: {
   drive: any
   chunkStore: any
@@ -26,6 +27,7 @@ export async function uploadFile({
   destPath: string
   mime?: string | null
   isPrivate?: boolean
+  uploaderIdentity?: string | null
 }) {
   const dest = normalizePath(destPath)
   const st = await fs.promises.stat(localPath)
@@ -119,6 +121,7 @@ export async function uploadFile({
     mime,
     isPrivate,
     uploadedAt: Date.now(),
+    uploaderIdentity,
     networkKeyHex,
     sourceName: path.basename(localPath),
     originalSize,
@@ -147,7 +150,7 @@ export async function uploadFile({
       byteLength: originalSize,
       mime,
       uploadedAt: meta.uploadedAt,
-      uploaderIdentity: null,
+      uploaderIdentity,
       networkKeyHex,
       nonce: masterNonce,
       encryptedSize: totalEncryptedSize,

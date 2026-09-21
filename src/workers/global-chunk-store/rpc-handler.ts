@@ -98,6 +98,7 @@ export function setupConnectionRpc(
       ? await storageManager.getAvailableBytesForNetwork(null)
       : 1 * 1024 * 1024 * 1024
 
+    conn._handshakeCompleted = true
     if (typeof onPeerHandshake === 'function' && peerKeys.length > 0) {
       try {
         onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
@@ -172,6 +173,8 @@ export function setupConnectionRpc(
         conn._availableStorageBytes = res.availableStorageBytes
       }
 
+      conn._handshakeCompleted = true
+
       if (typeof onPeerHandshake === 'function' && conn._networkKeyHexes.size > 0) {
         try {
           onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
@@ -239,6 +242,9 @@ export function setupConnectionRpc(
   // 3. Store chunk with strict per-network quota & integrity validation + read-only locking
   rpc.respond('store-chunk', async (req: any) => {
     if (!req || !req.hash || !req.data) throw new Error('Invalid store chunk payload')
+    if (!conn._handshakeCompleted) {
+      throw new Error('Forbidden: Peer connection handshake is not yet completed')
+    }
     if (req.networkKeyHex && isNetworkJoined && !isNetworkJoined(req.networkKeyHex)) {
       throw new Error(`Forbidden: Receiver is not a member of network ${req.networkKeyHex.slice(0, 12)}`)
     }

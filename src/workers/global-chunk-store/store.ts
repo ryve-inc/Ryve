@@ -222,7 +222,9 @@ class GlobalChunkStore {
   }
 
   _getActiveRpcConnections(): any[] {
-    return Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+    return Array.from(this.swarm.connections).filter(
+      (conn: any) => conn._chunkRpc && !conn._chunkRpc.closed && conn._handshakeCompleted === true
+    )
   }
 
   async syncPublicCatalog(networkKeyHex: string) {
@@ -311,7 +313,7 @@ class GlobalChunkStore {
       this.rebalanceNetwork(networkKeyHex).catch((err) => {
         console.warn(`[ChunkStore:Rebalance] Rebalance error for network ${networkKeyHex.slice(0, 12)}:`, err?.message || err)
       })
-    }, 2500)
+    }, 3000)
     this._rebalanceTimers.set(networkKeyHex, timer)
   }
 
@@ -346,6 +348,7 @@ class GlobalChunkStore {
       let totalOffloaded = 0
       let totalPurged = 0
       let totalFreedBytes = 0
+      const peerQuotaFull = new Set<string>()
 
       for (const manifest of manifests) {
         if (!manifest || !Array.isArray(manifest.chunks) || manifest.chunks.length === 0) continue
@@ -362,7 +365,7 @@ class GlobalChunkStore {
           const targetIndex = chunkIndex % P
           const targetNode = eligibleNodes[targetIndex]
 
-          if (targetNode && !targetNode.isSelf) {
+          if (targetNode && !targetNode.isSelf && !peerQuotaFull.has(targetNode.id)) {
             offloadItems.push({ chunkMeta, chunkPath, targetNode })
           }
         }
@@ -372,11 +375,15 @@ class GlobalChunkStore {
         // Offload chunks with bounded concurrency (batch of 4)
         const CONCURRENCY = 4
         for (let i = 0; i < offloadItems.length; i += CONCURRENCY) {
-          const batch = offloadItems.slice(i, i + CONCURRENCY)
+          const batch = offloadItems.slice(i, i + CONCURRENCY).filter(
+            (item) => !peerQuotaFull.has(item.targetNode.id)
+          )
+          if (batch.length === 0) continue
+
           await Promise.all(
             batch.map(async ({ chunkMeta, chunkPath, targetNode }) => {
               const rpc = targetNode._chunkRpc
-              if (!rpc || rpc.closed) return
+              if (!rpc || rpc.closed || peerQuotaFull.has(targetNode.id)) return
 
               try {
                 const buf: any = await fs.promises.readFile(chunkPath)
@@ -403,10 +410,16 @@ class GlobalChunkStore {
                   }
                 }
               } catch (err: any) {
-                console.warn(
-                  `[ChunkStore:Rebalance] Failed to offload chunk ${chunkMeta.hash.slice(0, 12)} to peer ${targetNode.id.slice(0, 8)}:`,
-                  err?.message || err
-                )
+                const isQuota = err?.message?.includes('QUOTA_EXCEEDED') || err?.message?.includes('quota')
+                if (!peerQuotaFull.has(targetNode.id)) {
+                  peerQuotaFull.add(targetNode.id)
+                  if (targetNode.conn?._availableStorageByNetwork) {
+                    targetNode.conn._availableStorageByNetwork.set(networkKeyHex, 0)
+                  }
+                  console.log(
+                    `[ChunkStore:Rebalance] Peer ${targetNode.id.slice(0, 8)} storage quota reached (${isQuota ? 'Quota full' : err?.message || err}). Retaining remaining chunks locally.`
+                  )
+                }
               }
             })
           )
@@ -441,6 +454,7 @@ class GlobalChunkStore {
   async _distributeAndPruneChunks(chunkList: any[], allocation: any, networkKeyHex?: string | null) {
     const offloadedHashes = new Set<string>()
     const selfAssignedHashes = new Set<string>()
+    const peerQuotaFull = new Set<string>()
 
     for (const [node, peerChunks] of allocation.distribution.entries()) {
       if ((node as any)?.isSelf) {
@@ -456,12 +470,30 @@ class GlobalChunkStore {
       const rpc = (node as any)._chunkRpc
       if (!rpc || rpc.closed) continue
 
+      const nodeId = (node as any).id || (node as any)._peerId || 'peer'
+      if (peerQuotaFull.has(nodeId)) {
+        for (const chunk of peerChunks) {
+          selfAssignedHashes.add(chunk.hash)
+        }
+        continue
+      }
+
       // Process peer chunks in bounded batches (concurrency of 4)
       const CONCURRENCY = 4
       for (let i = 0; i < peerChunks.length; i += CONCURRENCY) {
+        if (peerQuotaFull.has(nodeId)) {
+          for (const chunk of peerChunks.slice(i)) {
+            selfAssignedHashes.add(chunk.hash)
+          }
+          break
+        }
         const batch = peerChunks.slice(i, i + CONCURRENCY)
         await Promise.all(
           batch.map(async (chunk: any) => {
+            if (peerQuotaFull.has(nodeId)) {
+              selfAssignedHashes.add(chunk.hash)
+              return
+            }
             try {
               await rpc.request(
                 'store-chunk',
@@ -474,16 +506,17 @@ class GlobalChunkStore {
               )
               offloadedHashes.add(chunk.hash)
             } catch (err: any) {
-              const isQuota = err?.message?.includes('QUOTA_EXCEEDED')
-              console.warn(
-                `[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer (${isQuota ? 'QUOTA FULL' : err?.message || err}). Retaining locally.`
-              )
-              if (isQuota) {
-                if ((node as any)._availableStorageByNetwork && networkKeyHex) {
-                  ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
-                } else {
-                  ;(node as any)._availableStorageBytes = 0
-                }
+              const isQuota = err?.message?.includes('QUOTA_EXCEEDED') || err?.message?.includes('quota')
+              if (!peerQuotaFull.has(nodeId)) {
+                peerQuotaFull.add(nodeId)
+                console.log(
+                  `[ChunkStore:Uploader] Peer ${nodeId.slice(0, 8)} storage quota reached (${isQuota ? 'Quota full' : err?.message || err}). Retaining remaining chunks locally.`
+                )
+              }
+              if ((node as any)._availableStorageByNetwork && networkKeyHex) {
+                ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
+              } else {
+                ;(node as any)._availableStorageBytes = 0
               }
               // Retain chunk locally to prevent data loss
               selfAssignedHashes.add(chunk.hash)

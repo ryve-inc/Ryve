@@ -2,7 +2,15 @@ import { useDrive } from '@/context/drive-context'
 import { Copy, ShieldCheck, Users, X, LogOut, Radio } from 'lucide-react'
 
 export function NetworkInfoModal() {
-  const { networkInfoModal, closeNetworkInfoModal, status, copyClipboard, logout, openJoinNetworkModal } = useDrive()
+  const {
+    networkInfoModal,
+    closeNetworkInfoModal,
+    status,
+    copyClipboard,
+    logout,
+    openJoinNetworkModal,
+    openNetworkSettingsModal
+  } = useDrive()
 
   if (!networkInfoModal.open) return null
 
@@ -68,6 +76,17 @@ export function NetworkInfoModal() {
         </div>
 
         <div className="mt-6 flex flex-wrap gap-2 pt-2 border-t border-line">
+          {status.network.activeId ? (
+            <button
+              onClick={() => {
+                closeNetworkInfoModal()
+                openNetworkSettingsModal(status.network.activeId!)
+              }}
+              className="flex-1 rounded-xl bg-leaf px-3 py-2 text-xs font-semibold text-soil hover:bg-leaf/90 transition-colors cursor-pointer"
+            >
+              Configure Network Storage
+            </button>
+          ) : null}
           <button
             onClick={() => {
               closeNetworkInfoModal()

@@ -5,16 +5,24 @@ import { useDrive } from '@/context/drive-context'
 import { Eye } from 'lucide-react'
 
 export function DetailPanel() {
-  const { detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
+  const { status, detailOpen, detailName, detailMeta, chunkList, selectedEntry, previewSelected, showToast } = useDrive()
   if (!detailOpen) return null
 
+  const isOwner = selectedEntry
+    ? selectedEntry.isPrivate !== false ||
+      selectedEntry.isOwner === true ||
+      (Boolean(status.identity) &&
+        (selectedEntry.uploaderIdentity === status.identity ||
+          (selectedEntry.manifest?.metadata as any)?.uploaderIdentity === status.identity))
+    : false
+
   return (
-    <aside className="flex w-[min(360px,40vw)] flex-col gap-3 overflow-auto border-l border-line bg-moss/90 p-4 backdrop-blur-xl">
+    <aside className="flex w-[min(360px,40vw)] flex-col gap-3 overflow-auto custom-scrollbar border-l border-line bg-moss/90 p-4 backdrop-blur-xl">
       <DetailCloseButton />
       <h2 className="display-heading m-0 text-2xl">{detailName}</h2>
       <p className="m-0 font-mono text-sm text-mute">{detailMeta}</p>
       <h3 className="meta-label m-0 text-leaf">Chunk hashes</h3>
-      <div className="max-h-70 overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-line bg-soil/60 p-3 font-mono text-[0.72rem] text-soft">
+      <div className="max-h-70 overflow-auto custom-scrollbar whitespace-pre-wrap break-all rounded-2xl border border-line bg-soil/60 p-3 font-mono text-[0.72rem] text-soft">
         {chunkList}
       </div>
       <div className="flex flex-wrap gap-2">
@@ -26,7 +34,7 @@ export function DetailPanel() {
           <span>Preview</span>
         </button>
         <DownloadButton />
-        {selectedEntry?.source === 'vault' ? <DeleteButton /> : null}
+        {isOwner ? <DeleteButton /> : null}
       </div>
     </aside>
   )

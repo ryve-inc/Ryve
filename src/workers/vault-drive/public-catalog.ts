@@ -84,6 +84,16 @@ class PublicCatalogManager {
     await this.saveCatalog(networkKeyHex)
   }
 
+  getPublicFilesSync(networkKeyHex: string): PublicFileManifest[] {
+    const map = this.catalogs.get(networkKeyHex)
+    return map ? Array.from(map.values()) : []
+  }
+
+  getAllFiles(networkKeyHex: string): PublicFileManifest[] {
+    const map = this.catalogs.get(networkKeyHex)
+    return map ? Array.from(map.values()) : []
+  }
+
   async getPublicFiles(networkKeyHex: string): Promise<PublicFileManifest[]> {
     const map = await this.loadCatalog(networkKeyHex)
     return Array.from(map.values())

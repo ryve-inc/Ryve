@@ -6,6 +6,15 @@ import hypercoreCrypto from 'hypercore-crypto'
 import { allocateChunksToPeers, DEFAULT_EC_K, DEFAULT_EC_M } from '../erasure-coding'
 import { setupConnectionRpc } from './rpc-handler'
 import type { GlobalChunkStoreOptions } from './types'
+import { scheduleRebalance, rebalanceNetwork } from './rebalancer'
+import {
+  syncPeerCatalog,
+  syncPublicCatalog,
+  broadcastPublicFile,
+  broadcastRemovePublicFile,
+  broadcastStorageUpdate,
+  broadcastDeleteChunks
+} from './catalog-sync'
 
 /**
  * Stateless GlobalChunkStore for P2P chunk offloading & retrieval.
@@ -23,6 +32,12 @@ class GlobalChunkStore {
   getJoinedNetworkKeys: (() => string[]) | null
   isNetworkJoined: ((networkKeyHex: string) => boolean) | null
   onPublicCatalogUpdated: ((networkKeyHex: string) => void) | null
+  storageManager: any
+  onStorageChanged: (() => void) | null
+  onPeerHandshake: ((conn: any, networkKeys: string[]) => void) | null
+
+  _rebalanceTimers: Map<string, any>
+  _isRebalancing: Map<string, boolean>
 
   constructor({
     swarm,
@@ -31,7 +46,10 @@ class GlobalChunkStore {
     getNetworkKeyHex = null,
     getJoinedNetworkKeys = null,
     isNetworkJoined = null,
-    onPublicCatalogUpdated = null
+    onPublicCatalogUpdated = null,
+    storageManager = null,
+    onStorageChanged = null,
+    onPeerHandshake = null
   }: GlobalChunkStoreOptions) {
     this.swarm = swarm
     this.storageDir = storageDir
@@ -42,6 +60,11 @@ class GlobalChunkStore {
     this.getJoinedNetworkKeys = getJoinedNetworkKeys
     this.isNetworkJoined = isNetworkJoined
     this.onPublicCatalogUpdated = onPublicCatalogUpdated
+    this.storageManager = storageManager
+    this.onStorageChanged = onStorageChanged
+    this.onPeerHandshake = onPeerHandshake
+    this._rebalanceTimers = new Map()
+    this._isRebalancing = new Map()
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -76,6 +99,37 @@ class GlobalChunkStore {
   }
 
   /**
+   * Returns a deterministically sorted list of online nodes (self + remote peers) for a network.
+   * Enables all peers in the swarm to calculate the exact same chunk assignments.
+   */
+  getDeterministicNodes(networkKeyHex?: string | null): any[] {
+    const myId = this.swarm?.keyPair?.publicKey
+      ? b4a.toString(this.swarm.keyPair.publicKey, 'hex')
+      : '00_self'
+    const selfNode = { id: myId, isSelf: true }
+
+    const candidatePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
+
+    const remoteNodes = peers.map((conn: any) => {
+      const peerId = conn._peerId || (conn.remotePublicKey ? b4a.toString(conn.remotePublicKey, 'hex') : 'peer_' + Math.random().toString(16))
+      return {
+        id: peerId,
+        isSelf: false,
+        conn,
+        _chunkRpc: conn._chunkRpc,
+        _availableStorageBytes: conn._availableStorageBytes,
+        _availableStorageByNetwork: conn._availableStorageByNetwork,
+        _networkKeyHexes: conn._networkKeyHexes
+      }
+    })
+
+    const allNodes = [selfNode, ...remoteNodes]
+    allNodes.sort((a, b) => a.id.localeCompare(b.id))
+    return allNodes
+  }
+
+  /**
    * Join a single network's chunk topic. Does NOT leave existing topics.
    * Safe to call multiple times for the same networkId (idempotent).
    */
@@ -92,7 +146,10 @@ class GlobalChunkStore {
 
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
-      if (netKey) this.syncPublicCatalog(netKey).catch(() => {})
+      if (netKey) {
+        this.syncPublicCatalog(netKey).catch(() => {})
+        this.scheduleRebalance(netKey)
+      }
     }
   }
 
@@ -127,7 +184,17 @@ class GlobalChunkStore {
       this.getNetworkKeyHex || undefined,
       this.onPublicCatalogUpdated || undefined,
       this.getJoinedNetworkKeys || undefined,
-      this.isNetworkJoined || undefined
+      this.isNetworkJoined || undefined,
+      this.storageManager || undefined,
+      this.onStorageChanged || undefined,
+      (handshakeConn: any, netKeys: string[]) => {
+        if (typeof this.onPeerHandshake === 'function') {
+          this.onPeerHandshake(handshakeConn, netKeys)
+        }
+        for (const k of netKeys) {
+          this.scheduleRebalance(k)
+        }
+      }
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -140,86 +207,61 @@ class GlobalChunkStore {
     }
   }
 
-  async syncPeerCatalog(conn: any, networkKeyHex: string) {
-    const rpc = (conn as any)._chunkRpc
-    if (!rpc || rpc.closed || !this.publicCatalog || !networkKeyHex) return
-
-    try {
-      const res = await rpc.request('get-public-catalog', { networkKeyHex }, { timeout: 10000 })
-      if (res && Array.isArray(res.manifests) && res.manifests.length > 0) {
-        const matching = res.manifests.filter((m: any) => m && m.networkKeyHex === networkKeyHex)
-        if (matching.length > 0) {
-          const added = await this.publicCatalog.mergeRemoteManifests(networkKeyHex, matching)
-          if (added) {
-            console.log(`[PublicCatalog:Sync] Merged ${matching.length} public file manifest(s) for network ${networkKeyHex.slice(0, 12)}`)
-            if (this.onPublicCatalogUpdated) {
-              this.onPublicCatalogUpdated(networkKeyHex)
-            }
-          }
-        }
-      }
-    } catch {}
+  _getActiveRpcConnections(): any[] {
+    return Array.from(this.swarm.connections).filter(
+      (conn: any) => conn._chunkRpc && !conn._chunkRpc.closed && conn._handshakeCompleted === true
+    )
   }
 
-  _getActiveRpcConnections(): any[] {
-    return Array.from(this.swarm.connections).filter((conn: any) => conn._chunkRpc && !conn._chunkRpc.closed)
+  async syncPeerCatalog(conn: any, networkKeyHex: string) {
+    return syncPeerCatalog(this, conn, networkKeyHex)
   }
 
   async syncPublicCatalog(networkKeyHex: string) {
-    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
-    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-    for (const conn of peers) {
-      await this.syncPeerCatalog(conn, networkKeyHex).catch(() => {})
-    }
+    return syncPublicCatalog(this, networkKeyHex)
   }
 
   async broadcastPublicFile(manifest: any) {
-    if (!manifest || !manifest.networkKeyHex) return
-    const netKey = manifest.networkKeyHex
-    const candidatePeers = this.getPeersForNetwork(netKey)
-    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-
-    for (const conn of targetPeers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('announce-public-file', { manifest }, { timeout: 5000 })
-      } catch (err: any) {
-        console.warn(`[PublicCatalog:Broadcast] Failed to announce public file to peer:`, err?.message || err)
-      }
-    }
+    return broadcastPublicFile(this, manifest)
   }
 
   async broadcastRemovePublicFile(entryPath: string, networkKeyHex: string) {
-    if (!entryPath || !networkKeyHex) return
-    const candidatePeers = this.getPeersForNetwork(networkKeyHex)
-    const targetPeers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
-
-    for (const conn of targetPeers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('remove-public-file', { path: entryPath, networkKeyHex }, { timeout: 5000 })
-      } catch (err: any) {
-        console.warn(`[PublicCatalog:Broadcast] Failed to broadcast public file removal to peer:`, err?.message || err)
-      }
-    }
+    return broadcastRemovePublicFile(this, entryPath, networkKeyHex)
   }
 
+  async broadcastStorageUpdate(
+    networkKeyHex: string,
+    allocatedBytes: number,
+    usedBytes: number,
+    availableBytes: number
+  ) {
+    return broadcastStorageUpdate(this, networkKeyHex, allocatedBytes, usedBytes, availableBytes)
+  }
 
+  scheduleRebalance(networkKeyHex: string) {
+    return scheduleRebalance(this, networkKeyHex)
+  }
+
+  async rebalanceNetwork(networkKeyHex: string) {
+    return rebalanceNetwork(this, networkKeyHex)
+  }
 
   /**
-   * Helper function to send allocated chunks over RPC to remote peers,
-   * retain self-assigned chunks locally, and purge unassigned local chunk files.
+   * Helper function to send allocated chunks over RPC to remote peers with bounded concurrency,
+   * retain self-assigned chunks locally, and purge unassigned local chunk files smoothly.
    */
   async _distributeAndPruneChunks(chunkList: any[], allocation: any, networkKeyHex?: string | null) {
     const offloadedHashes = new Set<string>()
     const selfAssignedHashes = new Set<string>()
+    const peerQuotaFull = new Set<string>()
 
     for (const [node, peerChunks] of allocation.distribution.entries()) {
       if ((node as any)?.isSelf) {
         for (const chunk of peerChunks) {
           selfAssignedHashes.add(chunk.hash)
+          if (this.storageManager) {
+            this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
+          }
         }
         continue
       }
@@ -227,35 +269,95 @@ class GlobalChunkStore {
       const rpc = (node as any)._chunkRpc
       if (!rpc || rpc.closed) continue
 
-      for (const chunk of peerChunks) {
-        try {
-          await rpc.request(
-            'store-chunk',
-            {
-              hash: chunk.hash,
-              data: b4a.toString(chunk.buffer, 'hex'),
-              networkKeyHex: networkKeyHex || undefined
-            },
-            { timeout: 60000 }
-          )
-          offloadedHashes.add(chunk.hash)
-        } catch (err: any) {
-          console.warn(`[ChunkStore:Uploader] Failed to store chunk ${chunk.hash.slice(0, 12)} on peer:`, err?.message || err)
+      const nodeId = (node as any).id || (node as any)._peerId || 'peer'
+      if (peerQuotaFull.has(nodeId)) {
+        for (const chunk of peerChunks) {
+          selfAssignedHashes.add(chunk.hash)
         }
+        continue
+      }
+
+      // Process peer chunks in bounded batches (concurrency of 4)
+      const CONCURRENCY = 4
+      for (let i = 0; i < peerChunks.length; i += CONCURRENCY) {
+        if (peerQuotaFull.has(nodeId)) {
+          for (const chunk of peerChunks.slice(i)) {
+            selfAssignedHashes.add(chunk.hash)
+          }
+          break
+        }
+        const batch = peerChunks.slice(i, i + CONCURRENCY)
+        await Promise.all(
+          batch.map(async (chunk: any) => {
+            if (peerQuotaFull.has(nodeId)) {
+              selfAssignedHashes.add(chunk.hash)
+              return
+            }
+            try {
+              await rpc.request(
+                'store-chunk',
+                {
+                  hash: chunk.hash,
+                  data: b4a.toString(chunk.buffer, 'hex'),
+                  networkKeyHex: networkKeyHex || undefined
+                },
+                { timeout: 60000 }
+              )
+              offloadedHashes.add(chunk.hash)
+            } catch (err: any) {
+              const isQuota = err?.message?.includes('QUOTA_EXCEEDED') || err?.message?.includes('quota')
+              if (!peerQuotaFull.has(nodeId)) {
+                peerQuotaFull.add(nodeId)
+                console.log(
+                  `[ChunkStore:Uploader] Peer ${nodeId.slice(0, 8)} storage quota reached (${isQuota ? 'Quota full' : err?.message || err}). Retaining remaining chunks locally.`
+                )
+              }
+              if ((node as any)._availableStorageByNetwork && networkKeyHex) {
+                ;(node as any)._availableStorageByNetwork.set(networkKeyHex, 0)
+              } else {
+                ;(node as any)._availableStorageBytes = 0
+              }
+              // Retain chunk locally to prevent data loss
+              selfAssignedHashes.add(chunk.hash)
+              if (this.storageManager) {
+                this.storageManager.recordChunkAdded(chunk.hash, chunk.buffer.byteLength, networkKeyHex)
+              }
+            }
+          })
+        )
+        // Yield to event loop after each batch to keep Hyperswarm UDP ping/ACKs alive
+        await new Promise((resolve) => setImmediate(resolve))
       }
     }
 
     // Purge local chunk files NOT assigned to self that were sent to remote peers or unassigned
     let purgedCount = 0
-    for (const chunk of chunkList) {
-      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      if (!selfAssignedHashes.has(chunk.hash)) {
-        await fs.promises.chmod(localPath, 0o666).catch(() => {})
-        await fs.promises.unlink(localPath).catch(() => {})
-        purgedCount++
-      } else {
-        await fs.promises.chmod(localPath, 0o444).catch(() => {})
+    const PURGE_BATCH = 10
+    for (let i = 0; i < chunkList.length; i += PURGE_BATCH) {
+      const batch = chunkList.slice(i, i + PURGE_BATCH)
+      await Promise.all(
+        batch.map(async (chunk: any) => {
+          const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+          if (!selfAssignedHashes.has(chunk.hash)) {
+            await fs.promises.chmod(localPath, 0o666).catch(() => {})
+            await fs.promises.unlink(localPath).catch(() => {})
+            purgedCount++
+          } else {
+            await fs.promises.chmod(localPath, 0o444).catch(() => {})
+          }
+        })
+      )
+      if (chunkList.length > 20) {
+        await new Promise((resolve) => setImmediate(resolve))
       }
+    }
+
+    if (this.storageManager) {
+      await this.storageManager.recalculateUsedBytes().catch(() => {})
+    }
+
+    if (typeof this.onStorageChanged === 'function') {
+      try { this.onStorageChanged() } catch {}
     }
 
     console.log(
@@ -267,17 +369,24 @@ class GlobalChunkStore {
    * Erasure Coding chunk offloading strictly distributed only among peers of the specified network.
    */
   async offloadChunks(chunkList: any[], K = DEFAULT_EC_K, M = DEFAULT_EC_M, networkKeyHex?: string | null) {
-    // 1. Save all chunks to local peer cache first (Read-Only)
-    for (const chunk of chunkList) {
-      const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
-      await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
-      await fs.promises.chmod(localPath, 0o444).catch(() => {})
+    // 1. Save chunks to local peer cache in bounded batches (concurrency of 8)
+    const WRITE_BATCH = 8
+    for (let i = 0; i < chunkList.length; i += WRITE_BATCH) {
+      const batch = chunkList.slice(i, i + WRITE_BATCH)
+      await Promise.all(
+        batch.map(async (chunk: any) => {
+          const localPath = path.join(this.cacheDir, chunk.hash + '.bin')
+          await fs.promises.writeFile(localPath, chunk.buffer).catch(() => {})
+          await fs.promises.chmod(localPath, 0o444).catch(() => {})
+        })
+      )
+      if (chunkList.length > WRITE_BATCH) {
+        await new Promise((resolve) => setImmediate(resolve))
+      }
     }
 
-    const selfNode = { isSelf: true }
-    // Strictly select ONLY peers that belong to this network
-    const remotePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : []
-    const nodes = [selfNode, ...remotePeers]
+    // Strictly select ONLY peers that belong to this network and sort deterministically
+    const nodes = this.getDeterministicNodes(networkKeyHex)
 
     const allocation = allocateChunksToPeers(chunkList, nodes, K, M)
 
@@ -290,9 +399,6 @@ class GlobalChunkStore {
     // 2. Distribute chunks to remote network peers via RPC & prune unassigned local chunk files
     await this._distributeAndPruneChunks(chunkList, allocation, networkKeyHex)
 
-    // 3. Prune cache if quota is exceeded
-    this.pruneStorageQuota().catch(() => {})
-
     return allocation
   }
 
@@ -304,49 +410,50 @@ class GlobalChunkStore {
       if (!hash) continue
       const localPath = path.join(this.cacheDir, hash + '.bin')
       try {
+        const st = await fs.promises.stat(localPath).catch(() => null)
         await fs.promises.chmod(localPath, 0o666).catch(() => {})
         await fs.promises.unlink(localPath)
+        if (this.storageManager && st && typeof st.size === 'number') {
+          this.storageManager.recordChunkRemoved(st.size)
+        }
         console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)}`)
       } catch (err) {
         try {
+          const st = await fs.promises.stat(localPath).catch(() => null)
           await fs.promises.chmod(localPath, 0o777).catch(() => {})
           await fs.promises.unlink(localPath)
+          if (this.storageManager && st && typeof st.size === 'number') {
+            this.storageManager.recordChunkRemoved(st.size)
+          }
           console.log(`[ChunkStore:Purge] Purged local chunk ${hash.slice(0, 12)} (fallback)`)
         } catch {}
       }
     }
+    if (this.storageManager) {
+      await this.storageManager.recalculateUsedBytes().catch(() => {})
+    }
+    if (typeof this.onStorageChanged === 'function') {
+      try { this.onStorageChanged() } catch {}
+    }
   }
-
 
   /**
    * Purges specified chunk hashes from local storage and sends an RPC deletion request
    * to connected network peers to free up peer storage.
    */
   async broadcastDeleteChunks(hashes: string[], networkKeyHex?: string | null) {
-    if (!hashes || hashes.length === 0) return
-    // 1. Purge locally first
-    await this.purgeChunks(hashes)
-
-    // 2. Broadcast RPC delete request to connected network peers
-    const peers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
-    let notifiedPeers = 0
-    for (const conn of peers) {
-      const rpc = (conn as any)._chunkRpc
-      if (!rpc || rpc.closed) continue
-      try {
-        await rpc.request('delete-chunks', { hashes, networkKeyHex: networkKeyHex || undefined }, { timeout: 10000 })
-        notifiedPeers++
-      } catch (err: any) {
-        console.warn(`[ChunkStore:DeleteRPC] Failed to request chunk deletion from peer:`, err?.message || err)
-      }
-    }
-    console.log(`[ChunkStore:DeleteRPC] Broadcasted deletion for ${hashes.length} chunk(s) to ${notifiedPeers} online peer(s).`)
+    return broadcastDeleteChunks(this, hashes, networkKeyHex)
   }
 
   /**
-   * Automatically prunes oldest chunk files if local cache exceeds max storage bytes.
+   * Automatically prunes oldest unmanaged chunk files if local cache exceeds actual configured storage bytes.
    */
-  async pruneStorageQuota(maxBytes = 500 * 1024 * 1024) {
+  async pruneStorageQuota(maxBytes?: number) {
+    if (!this.storageManager) return
+    const limit = typeof maxBytes === 'number' && maxBytes > 0
+      ? maxBytes
+      : this.storageManager.getTotalAllocatedBytes()
+
     try {
       const files = await fs.promises.readdir(this.cacheDir)
       const chunkFiles: { name: string; path: string; size: number; mtime: number }[] = []
@@ -362,12 +469,12 @@ class GlobalChunkStore {
         } catch {}
       }
 
-      if (totalSize <= maxBytes) return
+      if (totalSize <= limit) return
 
       // Sort by mtime ascending (oldest first)
       chunkFiles.sort((a, b) => a.mtime - b.mtime)
 
-      const targetSize = maxBytes * 0.8
+      const targetSize = limit * 0.9
       let freedBytes = 0
 
       for (const file of chunkFiles) {
@@ -379,7 +486,14 @@ class GlobalChunkStore {
         } catch {}
       }
 
-      console.log(`[ChunkStore:Quota] Storage quota exceeded (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(maxBytes / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of oldest chunks.`)
+      if (this.storageManager && freedBytes > 0) {
+        await this.storageManager.recalculateUsedBytes().catch(() => {})
+      }
+      if (freedBytes > 0 && typeof this.onStorageChanged === 'function') {
+        try { this.onStorageChanged() } catch {}
+      }
+
+      console.log(`[ChunkStore:Quota] Storage quota reached (${(totalSize / 1024 / 1024).toFixed(1)} MB > ${(limit / 1024 / 1024).toFixed(1)} MB). Pruned ${(freedBytes / 1024 / 1024).toFixed(1)} MB of unpinned chunks.`)
     } catch {}
   }
 
@@ -437,4 +551,3 @@ class GlobalChunkStore {
 }
 
 export { GlobalChunkStore }
-

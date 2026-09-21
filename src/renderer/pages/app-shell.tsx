@@ -4,6 +4,7 @@ import { AppSidebar } from '@/components/app-sidebar'
 import { DetailPanel } from '@/components/detail-panel'
 import { FilesPage } from '@/pages/files-page'
 import { HomeDashboard } from '@/pages/home-dashboard'
+import { SettingsPage } from '@/pages/settings-page'
 import { cn } from '@/lib/utils'
 import { useDrive } from '@/context/drive-context'
 import { Share2 } from 'lucide-react'
@@ -24,14 +25,16 @@ export function AppShell() {
   const breadcrumb =
     currentNav === 'home'
       ? 'RYVE / Dashboard'
-      : `${activeNetwork?.name || 'P2P Network'} ${currentDir}`
+      : currentNav === 'settings'
+        ? 'RYVE / Settings & Storage Allocation'
+        : `${activeNetwork?.name || 'P2P Network'} ${currentDir}`
 
   return (
-    <section className="grid h-full grid-cols-[280px_1fr_auto]">
+    <section className="grid h-full min-h-0 grid-cols-[280px_1fr_auto] overflow-hidden">
       <AppSidebar />
 
-      <main className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-line bg-soil/80 px-5 py-3.5 backdrop-blur-xl">
+      <main className="flex min-w-0 min-h-0 h-full flex-col overflow-hidden">
+        <header className="sticky top-0 z-20 flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-line bg-soil/80 px-5 py-3.5 backdrop-blur-xl">
           <div className="font-mono text-sm text-mute">{breadcrumb}</div>
           {currentNav === 'files' ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -49,7 +52,7 @@ export function AppShell() {
         </header>
 
         <div
-          className={cn('min-h-0 flex-1 overflow-auto p-5 md:p-6', dragging && 'drag')}
+          className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5 md:p-6 custom-scrollbar', dragging && 'drag')}
           onDragOver={(e) => {
             e.preventDefault()
             setDragging(true)
@@ -63,7 +66,13 @@ export function AppShell() {
             }
           }}
         >
-          {currentNav === 'home' ? <HomeDashboard /> : <FilesPage />}
+          {currentNav === 'home' ? (
+            <HomeDashboard />
+          ) : currentNav === 'settings' ? (
+            <SettingsPage />
+          ) : (
+            <FilesPage />
+          )}
         </div>
       </main>
 

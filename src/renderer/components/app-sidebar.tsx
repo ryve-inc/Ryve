@@ -1,5 +1,5 @@
 import { useDrive } from '@/context/drive-context'
-import { Plus, Server, Home, Folder } from 'lucide-react'
+import { Plus, Server, Home, Folder, Sliders } from 'lucide-react'
 
 export function AppSidebar() {
   const {
@@ -34,7 +34,7 @@ export function AppSidebar() {
         <div className="h-px w-8 bg-line/60" />
 
         {/* Joined Networks Icons */}
-        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto w-full items-center px-2">
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto custom-scrollbar w-full items-center px-2">
           {networks.map((net) => {
             const isActive = net.id === activeId && currentNav === 'files'
             const initials = net.name.split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase() || 'NET'
@@ -77,48 +77,83 @@ export function AppSidebar() {
             <Plus className="h-5 w-5" />
           </button>
         </div>
+
+        {/* Settings & Storage Button in Vertical Rail */}
+        <div className="h-px w-8 bg-line/60 my-1" />
+        <button
+          onClick={() => navigate('settings')}
+          className={`group relative flex h-11 w-11 items-center justify-center rounded-2xl transition-all duration-200 cursor-pointer ${
+            currentNav === 'settings'
+              ? 'bg-leaf text-soil shadow-lg shadow-leaf/30 scale-105'
+              : 'bg-moss border border-line text-mute hover:border-leaf/50 hover:text-white hover:rounded-xl'
+          }`}
+          title="Settings & Storage Allocation"
+        >
+          <Sliders className="h-5 w-5" />
+        </button>
       </div>
 
       {/* Main Navigation Panel */}
-      <div className="flex flex-1 flex-col gap-4 p-3.5">
-        <div className="flex items-center gap-2 px-1 py-1">
-          <Server className="h-4 w-4 text-leaf" />
-          <span className="display-title text-sm font-semibold truncate text-white">
-            {currentNav === 'home' ? 'RYVE Dashboard' : activeNetwork?.name || 'P2P Workspace'}
-          </span>
-        </div>
-
-        <nav className="flex-1 overflow-y-auto space-y-1">
-          <div className="text-[10px] font-mono uppercase tracking-wider text-mute px-2 py-1">
-            Networks ({networks.length})
+      <div className="flex flex-1 flex-col justify-between p-3.5">
+        <div className="flex flex-col gap-4 overflow-hidden">
+          <div className="flex items-center gap-2 px-1 py-1">
+            <Server className="h-4 w-4 text-leaf" />
+            <span className="display-title text-sm font-semibold truncate text-white">
+              {currentNav === 'home'
+                ? 'RYVE Dashboard'
+                : currentNav === 'settings'
+                  ? 'Preferences'
+                  : activeNetwork?.name || 'P2P Workspace'}
+            </span>
           </div>
 
-          {networks.map((net) => {
-            const isActive = net.id === activeId && currentNav === 'files'
-            return (
-              <button
-                key={net.id}
-                onClick={async () => {
-                  await switchNetwork(net.id)
-                  navigate('files')
-                }}
-                className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-                  isActive
-                    ? 'bg-leaf/15 text-leaf font-bold border border-leaf/30'
-                    : 'text-mute hover:bg-fern/30 hover:text-white'
-                }`}
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <Folder className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{net.name}</span>
-                </div>
-                <span className="font-mono text-[10px] bg-soil/60 px-1.5 py-0.5 rounded text-leaf">
-                  {net.peers || status.peers || 0}
-                </span>
-              </button>
-            )
-          })}
-        </nav>
+          <nav className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
+            <div className="text-[10px] font-mono uppercase tracking-wider text-mute px-2 py-1">
+              Networks ({networks.length})
+            </div>
+
+            {networks.map((net) => {
+              const isActive = net.id === activeId && currentNav === 'files'
+              return (
+                <button
+                  key={net.id}
+                  onClick={async () => {
+                    await switchNetwork(net.id)
+                    navigate('files')
+                  }}
+                  className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                    isActive
+                      ? 'bg-leaf/15 text-leaf font-bold border border-leaf/30'
+                      : 'text-mute hover:bg-fern/30 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <Folder className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{net.name}</span>
+                  </div>
+                  <span className="font-mono text-[10px] bg-soil/60 px-1.5 py-0.5 rounded text-leaf">
+                    {net.peers || status.peers || 0}
+                  </span>
+                </button>
+              )
+            })}
+          </nav>
+        </div>
+
+        {/* Bottom Settings Link */}
+        <div className="pt-2 border-t border-line/60">
+          <button
+            onClick={() => navigate('settings')}
+            className={`w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition-all cursor-pointer ${
+              currentNav === 'settings'
+                ? 'bg-leaf text-soil font-bold shadow-md shadow-leaf/20'
+                : 'text-mute hover:bg-fern/30 hover:text-white border border-transparent hover:border-line'
+            }`}
+          >
+            <Sliders className="h-4 w-4 shrink-0" />
+            <span>Settings & Storage</span>
+          </button>
+        </div>
       </div>
     </aside>
   )

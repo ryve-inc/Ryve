@@ -37,6 +37,8 @@ export type DriveEntry = {
   metadata: Record<string, unknown> | null
   chunkCount?: number
   isPrivate?: boolean
+  uploaderIdentity?: string | null
+  isOwner?: boolean
 }
 
 export type NetworkItem = {
@@ -47,6 +49,10 @@ export type NetworkItem = {
   topicHex: string
   peers: number
   createdAt: number
+  allocatedBytes: number
+  usedBytes: number
+  networkTotalAllocatedBytes?: number
+  networkTotalUsedBytes?: number
 }
 
 export type NetworkInfo = {
@@ -58,6 +64,39 @@ export type NetworkInfo = {
   networks: NetworkItem[]
 }
 
+export type NetworkStorageAllocation = {
+  networkId: string
+  networkName: string
+  networkKeyHex: string
+  allocatedBytes: number
+  usedBytes: number
+  availableBytes: number
+  networkTotalAllocatedBytes?: number
+  networkTotalUsedBytes?: number
+}
+
+export type StorageInfo = {
+  totalAllocatedBytes: number
+  totalUsedBytes: number
+  totalFreeDiskBytes: number
+  remainingDriveBytes: number
+  reservedSystemBytes: number
+  networks: Record<string, NetworkStorageAllocation>
+}
+
+export type SetNetworkStorageParams = {
+  id: string
+  allocatedBytes: number
+}
+
+export type ShareInfo = {
+  id: string
+  name: string
+  path: string
+  writable: boolean
+  createdAt: number
+}
+
 export type AppStatus = {
   unlocked: boolean
   identity: string | null
@@ -66,6 +105,7 @@ export type AppStatus = {
   peers: number
   blindPeerKeys: string[]
   network: NetworkInfo
+  storage: StorageInfo
 }
 
 export type BridgeApi = {

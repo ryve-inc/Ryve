@@ -4,7 +4,7 @@ import b4a from 'b4a'
 
 import { normalizePath, joinPath } from './path-utils'
 import { uploadFile } from './uploader'
-import { downloadFile } from './downloader'
+import { downloadFile, readFileBuffer } from './downloader'
 
 class VaultDrive {
   store: any
@@ -16,6 +16,7 @@ class VaultDrive {
   chunkStore: any
   drive: any
   _discovery: any
+  identityHex: string | null
 
   constructor({
     store,
@@ -24,7 +25,8 @@ class VaultDrive {
     networkKeyHex = null,
     publicCatalog = null,
     blinds = null,
-    chunkStore = null
+    chunkStore = null,
+    identityHex = null
   }: {
     store: any
     swarm: any
@@ -33,6 +35,7 @@ class VaultDrive {
     publicCatalog?: any
     blinds?: any
     chunkStore?: any
+    identityHex?: string | null
   }) {
     this.store = store
     this.swarm = swarm
@@ -41,6 +44,7 @@ class VaultDrive {
     this.publicCatalog = publicCatalog
     this.blinds = blinds
     this.chunkStore = chunkStore
+    this.identityHex = identityHex
     this.drive = null
     this._discovery = null
   }
@@ -86,7 +90,9 @@ class VaultDrive {
         byteLength: exact?.value?.metadata?.originalSize || exact?.value?.blob?.byteLength || 0,
         metadata: exact?.value?.metadata || null,
         chunkCount: exact?.value?.metadata?.chunks?.length || 0,
-        isPrivate: exact?.value?.metadata?.isPrivate !== undefined ? Boolean(exact.value.metadata.isPrivate) : true
+        isPrivate: exact?.value?.metadata?.isPrivate !== undefined ? Boolean(exact.value.metadata.isPrivate) : true,
+        uploaderIdentity: exact?.value?.metadata?.uploaderIdentity || this.identityHex || null,
+        isOwner: true
       })
     }
 
@@ -103,6 +109,7 @@ class VaultDrive {
           if (!name || name === '.keep') continue
           const full = joinPath(folder, name)
           if (!names.has(full)) {
+            const isOwner = !pubFile.uploaderIdentity || (this.identityHex ? pubFile.uploaderIdentity === this.identityHex : true)
             names.set(full, {
               path: full,
               name,
@@ -110,7 +117,9 @@ class VaultDrive {
               byteLength: pubFile.originalSize || pubFile.byteLength || 0,
               metadata: pubFile,
               chunkCount: pubFile.chunks?.length || 0,
-              isPrivate: false
+              isPrivate: false,
+              uploaderIdentity: pubFile.uploaderIdentity || null,
+              isOwner
             })
           }
         }
@@ -132,7 +141,7 @@ class VaultDrive {
     return { path: p }
   }
 
-  async upload(localPath: string, destPath: string, mime: string | null = null, isPrivate = true) {
+  async upload(localPath: string, destPath: string, mime: string | null = null, isPrivate = true, uploaderIdentity: string | null = null) {
     return uploadFile({
       drive: this.drive,
       chunkStore: this.chunkStore,
@@ -142,7 +151,8 @@ class VaultDrive {
       localPath,
       destPath,
       mime,
-      isPrivate
+      isPrivate,
+      uploaderIdentity: uploaderIdentity || this.identityHex || null
     })
   }
 
@@ -158,13 +168,29 @@ class VaultDrive {
     })
   }
 
-  async delete(entryPath: string) {
+  async readBuffer(entryPath: string) {
+    return readFileBuffer({
+      drive: this.drive,
+      chunkStore: this.chunkStore,
+      encryptionKey: this.encryptionKey,
+      networkKeyHex: this.networkKeyHex,
+      publicCatalog: this.publicCatalog,
+      entryPath
+    })
+  }
+
+  async delete(entryPath: string, callerIdentityHex: string | null = null) {
     const p = normalizePath(entryPath)
     await this.drive.ready()
     const rawHashes: string[] = []
+    let detectedNetKey: string | null = null
+    const effectiveCaller = callerIdentityHex || this.identityHex
 
     try {
       const entry = await this.drive.entry(p)
+      if (entry?.value?.metadata?.networkKeyHex) {
+        detectedNetKey = entry.value.metadata.networkKeyHex
+      }
       if (entry?.value?.metadata?.chunks && Array.isArray(entry.value.metadata.chunks)) {
         for (const c of entry.value.metadata.chunks) {
           if (c && c.hash) rawHashes.push(c.hash)
@@ -172,40 +198,47 @@ class VaultDrive {
       }
     } catch {}
 
+    const effectiveNetKey = detectedNetKey || this.networkKeyHex
+
     try {
-      if (this.publicCatalog && this.networkKeyHex) {
-        const pubManifest = await this.publicCatalog.getPublicManifest(this.networkKeyHex, p)
-        if (pubManifest?.chunks && Array.isArray(pubManifest.chunks)) {
-          for (const c of pubManifest.chunks) {
-            if (c && c.hash) rawHashes.push(c.hash)
+      if (this.publicCatalog && effectiveNetKey) {
+        const pubManifest = await this.publicCatalog.getPublicManifest(effectiveNetKey, p)
+        if (pubManifest) {
+          // Check uploader permission
+          if (pubManifest.uploaderIdentity && effectiveCaller && pubManifest.uploaderIdentity !== effectiveCaller) {
+            throw new Error('Permission denied: Only the original uploader can delete this public file.')
+          }
+          if (pubManifest.chunks && Array.isArray(pubManifest.chunks)) {
+            for (const c of pubManifest.chunks) {
+              if (c && c.hash) rawHashes.push(c.hash)
+            }
           }
         }
       }
-    } catch {}
+    } catch (err: any) {
+      if (err?.message?.includes('Permission denied')) throw err
+    }
 
     const chunkHashes = Array.from(new Set(rawHashes))
 
     await this.drive.del(p)
-    if (this.publicCatalog && this.networkKeyHex) {
-      await this.publicCatalog.removePublicFile(this.networkKeyHex, p).catch(() => {})
+    if (this.publicCatalog && effectiveNetKey) {
+      await this.publicCatalog.removePublicFile(effectiveNetKey, p).catch(() => {})
       if (this.chunkStore && typeof this.chunkStore.broadcastRemovePublicFile === 'function') {
-        await this.chunkStore.broadcastRemovePublicFile(p, this.networkKeyHex).catch(() => {})
+        await this.chunkStore.broadcastRemovePublicFile(p, effectiveNetKey).catch(() => {})
       }
     }
-
 
     if (chunkHashes.length > 0 && this.chunkStore) {
       console.log(`[VaultDrive:Delete] Purging locally & broadcasting deletion for ${chunkHashes.length} chunk(s) associated with ${p}`)
       await this.chunkStore.purgeChunks(chunkHashes).catch(() => {})
-      await this.chunkStore.broadcastDeleteChunks(chunkHashes, this.networkKeyHex).catch((err: any) => {
+      await this.chunkStore.broadcastDeleteChunks(chunkHashes, effectiveNetKey).catch((err: any) => {
         console.warn(`[VaultDrive:Delete] Broadcast delete warning:`, err?.message || err)
       })
     }
 
     return { path: p }
   }
-
-
 
   async getManifest(entryPath: string) {
     const p = normalizePath(entryPath)
@@ -237,4 +270,3 @@ class VaultDrive {
 }
 
 export { VaultDrive }
-

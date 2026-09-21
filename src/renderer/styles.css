@@ -173,7 +173,7 @@
   }
 
   .mnemonic {
-    @apply m-0 whitespace-pre-wrap break-words rounded-2xl border p-4 font-mono text-[0.85rem] leading-relaxed;
+    @apply m-0 whitespace-pre-wrap wrap-break-word rounded-2xl border p-4 font-mono text-[0.85rem] leading-relaxed;
     border-color: #232739;
     background: rgb(11 12 18 / 0.65);
     color: #b6bbd0;
@@ -224,5 +224,81 @@
     border-radius: 9999px;
     background: #c6f24e;
     box-shadow: 0 0 8px rgb(198 242 78 / 0.7);
+  }
+
+  /* Global Base WebKit Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: rgba(11, 12, 18, 0.4);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(35, 39, 57, 0.85);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(124, 108, 255, 0.7);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Premium High-Tech Custom Scrollbar for Dashboard & Scroll Areas */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: rgba(17, 19, 28, 0.75);
+    border-radius: 9999px;
+    margin: 4px 2px;
+    border: 1px solid rgba(35, 39, 57, 0.7);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #7c6cff 0%, #c6f24e 100%);
+    border-radius: 9999px;
+    border: 2px solid rgba(17, 19, 28, 0.85);
+    background-clip: padding-box;
+    box-shadow: 0 0 12px rgba(198, 242, 78, 0.35);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #9b8eff 0%, #d8ff66 100%);
+    border: 1.5px solid rgba(17, 19, 28, 0.6);
+    background-clip: padding-box;
+    box-shadow: 0 0 18px rgba(198, 242, 78, 0.8), 0 0 10px rgba(124, 108, 255, 0.6);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:active {
+    background: #c6f24e;
+    box-shadow: 0 0 24px rgba(198, 242, 78, 1);
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Firefox fallback */
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: #232739 transparent;
+    }
+    .custom-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: #c6f24e #11131c;
+    }
   }
 }

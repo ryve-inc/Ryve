@@ -76,6 +76,11 @@ export function CreateNetworkModal() {
               />
             </div>
 
+            <div className="mt-4 rounded-xl border border-line/60 bg-moss/30 p-3 text-xs text-mute flex items-center justify-between">
+              <span>Default Storage Allocation:</span>
+              <span className="font-mono font-bold text-leaf">1.0 GB</span>
+            </div>
+
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"

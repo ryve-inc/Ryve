@@ -15,7 +15,8 @@ export function setupConnectionRpc(
   getJoinedNetworkKeys?: () => string[],
   isNetworkJoined?: (networkKeyHex: string) => boolean,
   storageManager?: any,
-  onStorageChanged?: () => void
+  onStorageChanged?: () => void,
+  onPeerHandshake?: (conn: any, networkKeys: string[]) => void
 ) {
   if (conn._chunkRpc) return
 
@@ -37,8 +38,21 @@ export function setupConnectionRpc(
     conn._availableStorageBytes = 1 * 1024 * 1024 * 1024 // Default 1 GB
   }
 
+  const getLocalPeerId = () => {
+    if (swarm?.keyPair?.publicKey) return b4a.toString(swarm.keyPair.publicKey, 'hex')
+    if (conn?.publicKey) return b4a.toString(conn.publicKey, 'hex')
+    return null
+  }
+
+  if (conn.remotePublicKey) {
+    conn._peerId = b4a.toString(conn.remotePublicKey, 'hex')
+  }
+
   // 1. Handshake to exchange joined network keys and available storage capacity per-network between peers
   rpc.respond('handshake', async (req: any) => {
+    if (req?.peerId && !conn._peerId) {
+      conn._peerId = req.peerId
+    }
     const peerKeys: string[] = Array.isArray(req?.networkKeyHexes) ? req.networkKeyHexes : []
     for (const k of peerKeys) {
       if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
@@ -64,8 +78,15 @@ export function setupConnectionRpc(
       ? await storageManager.getAvailableBytesForNetwork(null)
       : 1 * 1024 * 1024 * 1024
 
+    if (typeof onPeerHandshake === 'function' && peerKeys.length > 0) {
+      try {
+        onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+      } catch {}
+    }
+
     return {
       ok: true,
+      peerId: getLocalPeerId(),
       networkKeyHexes: myKeys,
       availableStorageBytes: defaultAvailable,
       availableByNetwork: myAvailableByNet
@@ -89,12 +110,16 @@ export function setupConnectionRpc(
       const res = await rpc.request(
         'handshake',
         {
+          peerId: getLocalPeerId(),
           networkKeyHexes: myKeys,
           availableStorageBytes: defaultAvailable,
           availableByNetwork: myAvailableByNet
         },
         { timeout: 5000 }
       )
+      if (res && res.peerId && !conn._peerId) {
+        conn._peerId = res.peerId
+      }
       if (res && Array.isArray(res.networkKeyHexes)) {
         for (const k of res.networkKeyHexes) {
           if (typeof k === 'string' && k.length > 0) conn._networkKeyHexes.add(k)
@@ -107,6 +132,12 @@ export function setupConnectionRpc(
       }
       if (res && typeof res.availableStorageBytes === 'number') {
         conn._availableStorageBytes = res.availableStorageBytes
+      }
+
+      if (typeof onPeerHandshake === 'function' && conn._networkKeyHexes.size > 0) {
+        try {
+          onPeerHandshake(conn, Array.from(conn._networkKeyHexes))
+        } catch {}
       }
     } catch { }
   }

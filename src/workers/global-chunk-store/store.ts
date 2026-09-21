@@ -27,6 +27,9 @@ class GlobalChunkStore {
   onStorageChanged: (() => void) | null
   onPeerHandshake: ((conn: any, networkKeys: string[]) => void) | null
 
+  _rebalanceTimers: Map<string, any>
+  _isRebalancing: Map<string, boolean>
+
   constructor({
     swarm,
     storageDir,
@@ -51,6 +54,8 @@ class GlobalChunkStore {
     this.storageManager = storageManager
     this.onStorageChanged = onStorageChanged
     this.onPeerHandshake = onPeerHandshake
+    this._rebalanceTimers = new Map()
+    this._isRebalancing = new Map()
     this._onConnection = this._onConnection.bind(this)
   }
 
@@ -85,6 +90,37 @@ class GlobalChunkStore {
   }
 
   /**
+   * Returns a deterministically sorted list of online nodes (self + remote peers) for a network.
+   * Enables all peers in the swarm to calculate the exact same chunk assignments.
+   */
+  getDeterministicNodes(networkKeyHex?: string | null): any[] {
+    const myId = this.swarm?.keyPair?.publicKey
+      ? b4a.toString(this.swarm.keyPair.publicKey, 'hex')
+      : '00_self'
+    const selfNode = { id: myId, isSelf: true }
+
+    const candidatePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : this._getActiveRpcConnections()
+    const peers = candidatePeers.length > 0 ? candidatePeers : this._getActiveRpcConnections()
+
+    const remoteNodes = peers.map((conn: any) => {
+      const peerId = conn._peerId || (conn.remotePublicKey ? b4a.toString(conn.remotePublicKey, 'hex') : 'peer_' + Math.random().toString(16))
+      return {
+        id: peerId,
+        isSelf: false,
+        conn,
+        _chunkRpc: conn._chunkRpc,
+        _availableStorageBytes: conn._availableStorageBytes,
+        _availableStorageByNetwork: conn._availableStorageByNetwork,
+        _networkKeyHexes: conn._networkKeyHexes
+      }
+    })
+
+    const allNodes = [selfNode, ...remoteNodes]
+    allNodes.sort((a, b) => a.id.localeCompare(b.id))
+    return allNodes
+  }
+
+  /**
    * Join a single network's chunk topic. Does NOT leave existing topics.
    * Safe to call multiple times for the same networkId (idempotent).
    */
@@ -101,7 +137,10 @@ class GlobalChunkStore {
 
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
-      if (netKey) this.syncPublicCatalog(netKey).catch(() => {})
+      if (netKey) {
+        this.syncPublicCatalog(netKey).catch(() => {})
+        this.scheduleRebalance(netKey)
+      }
     }
   }
 
@@ -138,7 +177,15 @@ class GlobalChunkStore {
       this.getJoinedNetworkKeys || undefined,
       this.isNetworkJoined || undefined,
       this.storageManager || undefined,
-      this.onStorageChanged || undefined
+      this.onStorageChanged || undefined,
+      (handshakeConn: any, netKeys: string[]) => {
+        if (typeof this.onPeerHandshake === 'function') {
+          this.onPeerHandshake(handshakeConn, netKeys)
+        }
+        for (const k of netKeys) {
+          this.scheduleRebalance(k)
+        }
+      }
     )
     if (this.getNetworkKeyHex) {
       const netKey = this.getNetworkKeyHex()
@@ -167,6 +214,8 @@ class GlobalChunkStore {
               this.onPublicCatalogUpdated(networkKeyHex)
             }
           }
+          // Schedule background rebalance to equalize storage across peers
+          this.scheduleRebalance(networkKeyHex)
         }
       }
     } catch {}
@@ -214,6 +263,139 @@ class GlobalChunkStore {
       } catch (err: any) {
         console.warn(`[PublicCatalog:Broadcast] Failed to broadcast public file removal to peer:`, err?.message || err)
       }
+    }
+  }
+
+  /**
+   * Debounced rebalance scheduler to avoid churn during peer connection bursts.
+   */
+  scheduleRebalance(networkKeyHex: string) {
+    if (!networkKeyHex) return
+    const existing = this._rebalanceTimers.get(networkKeyHex)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      this._rebalanceTimers.delete(networkKeyHex)
+      this.rebalanceNetwork(networkKeyHex).catch((err) => {
+        console.warn(`[ChunkStore:Rebalance] Rebalance error for network ${networkKeyHex.slice(0, 12)}:`, err?.message || err)
+      })
+    }, 2500)
+    this._rebalanceTimers.set(networkKeyHex, timer)
+  }
+
+  /**
+   * Rebalances chunk storage across all online peers in the specified network.
+   * Ensures equal chunk distribution and deletes locally held chunks that belong to remote peers.
+   */
+  async rebalanceNetwork(networkKeyHex: string) {
+    if (!networkKeyHex || this._isRebalancing.get(networkKeyHex)) return
+    this._isRebalancing.set(networkKeyHex, true)
+
+    try {
+      if (!this.publicCatalog) return
+      const manifests = await this.publicCatalog.getPublicFiles(networkKeyHex)
+      if (!Array.isArray(manifests) || manifests.length === 0) return
+
+      const nodes = this.getDeterministicNodes(networkKeyHex)
+      // Filter capacity-eligible nodes
+      const eligibleNodes = nodes.filter((n: any) => {
+        if (n.isSelf) return true
+        const avail = n._availableStorageBytes
+        return avail === undefined || avail > 0
+      })
+
+      const P = eligibleNodes.length
+      if (P <= 1) {
+        return // Only self online; no peers to balance with
+      }
+
+      console.log(`[ChunkStore:Rebalance] Starting background chunk rebalance across ${P} online peer(s) for network ${networkKeyHex.slice(0, 12)}...`)
+
+      let totalOffloaded = 0
+      let totalPurged = 0
+      let totalFreedBytes = 0
+
+      for (const manifest of manifests) {
+        if (!manifest || !Array.isArray(manifest.chunks) || manifest.chunks.length === 0) continue
+
+        const offloadItems: Array<{ chunkMeta: any; chunkPath: string; targetNode: any }> = []
+
+        for (const chunkMeta of manifest.chunks) {
+          if (!chunkMeta || !chunkMeta.hash) continue
+          const chunkPath = path.join(this.cacheDir, chunkMeta.hash + '.bin')
+          const exists = await fs.promises.stat(chunkPath).then(() => true).catch(() => false)
+          if (!exists) continue
+
+          const chunkIndex = typeof chunkMeta.index === 'number' ? chunkMeta.index : 0
+          const targetIndex = chunkIndex % P
+          const targetNode = eligibleNodes[targetIndex]
+
+          if (targetNode && !targetNode.isSelf) {
+            offloadItems.push({ chunkMeta, chunkPath, targetNode })
+          }
+        }
+
+        if (offloadItems.length === 0) continue
+
+        // Offload chunks with bounded concurrency (batch of 4)
+        const CONCURRENCY = 4
+        for (let i = 0; i < offloadItems.length; i += CONCURRENCY) {
+          const batch = offloadItems.slice(i, i + CONCURRENCY)
+          await Promise.all(
+            batch.map(async ({ chunkMeta, chunkPath, targetNode }) => {
+              const rpc = targetNode._chunkRpc
+              if (!rpc || rpc.closed) return
+
+              try {
+                const buf: any = await fs.promises.readFile(chunkPath)
+                const res = await rpc.request(
+                  'store-chunk',
+                  {
+                    hash: chunkMeta.hash,
+                    data: b4a.toString(buf, 'hex'),
+                    networkKeyHex
+                  },
+                  { timeout: 60000 }
+                )
+
+                if (res && res.ok) {
+                  // Successfully transferred to target peer! Now delete local copy to equalize storage
+                  await fs.promises.chmod(chunkPath, 0o666).catch(() => {})
+                  await fs.promises.unlink(chunkPath).catch(() => {})
+                  totalOffloaded++
+                  totalPurged++
+                  totalFreedBytes += buf.byteLength
+
+                  if (this.storageManager) {
+                    this.storageManager.recordChunkRemoved(chunkMeta.hash, buf.byteLength, networkKeyHex)
+                  }
+                }
+              } catch (err: any) {
+                console.warn(
+                  `[ChunkStore:Rebalance] Failed to offload chunk ${chunkMeta.hash.slice(0, 12)} to peer ${targetNode.id.slice(0, 8)}:`,
+                  err?.message || err
+                )
+              }
+            })
+          )
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+      }
+
+      if (totalPurged > 0) {
+        if (this.storageManager) {
+          await this.storageManager.recalculateUsedBytes().catch(() => {})
+        }
+        if (typeof this.onStorageChanged === 'function') {
+          try { this.onStorageChanged() } catch {}
+        }
+        console.log(
+          `[ChunkStore:Rebalance] Finished: Offloaded ${totalOffloaded} chunk(s) (${(totalFreedBytes / 1024 / 1024).toFixed(2)} MB freed locally). Equal distribution achieved.`
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[ChunkStore:Rebalance] Error during rebalance:`, err?.message || err)
+    } finally {
+      this._isRebalancing.set(networkKeyHex, false)
     }
   }
 
@@ -339,10 +521,8 @@ class GlobalChunkStore {
     }
 
 
-    const selfNode = { isSelf: true }
-    // Strictly select ONLY peers that belong to this network
-    const remotePeers = networkKeyHex ? this.getPeersForNetwork(networkKeyHex) : []
-    const nodes = [selfNode, ...remotePeers]
+    // Strictly select ONLY peers that belong to this network and sort deterministically
+    const nodes = this.getDeterministicNodes(networkKeyHex)
 
     const allocation = allocateChunksToPeers(chunkList, nodes, K, M)
 

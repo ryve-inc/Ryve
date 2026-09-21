@@ -79,7 +79,13 @@ export function allocateChunksToPeers(
     warnings.push(`${fullCount} peer(s) omitted due to exhausted storage quota.`)
   }
 
-  const activePeers = eligiblePeers.length > 0 ? eligiblePeers : peers
+  const activePeers = (eligiblePeers.length > 0 ? eligiblePeers : peers).slice()
+  // Deterministically sort peers by ID/key so all nodes in the network agree on exact chunk allocation
+  activePeers.sort((a: any, b: any) => {
+    const keyA = String(a?.id || a?._peerId || a?.keyHex || (a?.isSelf ? 'self' : ''))
+    const keyB = String(b?.id || b?._peerId || b?.keyHex || (b?.isSelf ? 'self' : ''))
+    return keyA.localeCompare(keyB)
+  })
   const activeCount = activePeers.length
 
   // Interleaved sliding round-robin distribution across capacity-eligible peers

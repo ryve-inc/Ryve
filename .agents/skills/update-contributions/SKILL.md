@@ -18,7 +18,7 @@ This skill automates reviewing Git commit logs and updating `CONTRIBUTIONS.md` t
    - Group main features under the respective team member:
      - **Ashin Sabu Mathew (`@AshinSMathew`):** P2P network, encryption, multi-network, in-app file preview, seeding, dashboard.
      - **Abin Raju Daniel (`@abinrd`):** Storage quotas/allocation, Android mobile app screens & background sync.
-     - **Goldi Babu (`@goldibabu`):** Data recovery/erasure coding, chunk protection & deletion, cleanup, public catalog sync.
+     - **Goldi Babu (`@goldibabu14`):** Data recovery/erasure coding, chunk protection & deletion, cleanup, public catalog sync.
      - **Ann Maria Jaison (`@Ann-Maria-Jaison`):** Requirements, workflow modeling, QA testing, documentation & reports.
 
 3. **Format Guidelines for `CONTRIBUTIONS.md`:**
